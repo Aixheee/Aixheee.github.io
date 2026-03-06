@@ -4,6 +4,27 @@
   
     
     <entry>
+      <title>第二篇文章</title>
+      <link href="/posts/0.html"/>
+      <url>/posts/0.html</url>
+      
+        <content type="html"><![CDATA[<h2 id="这是第二篇文章"><a href="#这是第二篇文章" class="headerlink" title="这是第二篇文章"></a>这是第二篇文章</h2>]]></content>
+      
+      
+      
+        <tags>
+            
+            <tag> Unity </tag>
+            
+            <tag> 计网 </tag>
+            
+        </tags>
+      
+    </entry>
+    
+    
+    
+    <entry>
       <title>第一个标签</title>
       <link href="/posts/3f8224af.html"/>
       <url>/posts/3f8224af.html</url>
@@ -11,12 +32,6 @@
         <content type="html"><![CDATA[]]></content>
       
       
-      
-        <tags>
-            
-            <tag> 这是一个标签 </tag>
-            
-        </tags>
       
     </entry>
     
@@ -27,9 +42,17 @@
       <link href="/posts/0.html"/>
       <url>/posts/0.html</url>
       
-        <content type="html"><![CDATA[<h2 id="这是一篇文章"><a href="#这是一篇文章" class="headerlink" title="这是一篇文章"></a>这是一篇文章</h2>]]></content>
+        <content type="html"><![CDATA[<h2 id="这是第一篇文章"><a href="#这是第一篇文章" class="headerlink" title="这是第一篇文章"></a>这是第一篇文章</h2>]]></content>
       
       
+      
+        <tags>
+            
+            <tag> Unity </tag>
+            
+            <tag> OS </tag>
+            
+        </tags>
       
     </entry>
     
