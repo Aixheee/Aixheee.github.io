@@ -4,6 +4,25 @@
   
     
     <entry>
+      <title>【内存分配与管理】malloc设计哲学</title>
+      <link href="/posts/0.html"/>
+      <url>/posts/0.html</url>
+      
+        <content type="html"><![CDATA[<p><strong>上篇文章中主要讲解了malloc底层的原理机制，本篇文章则侧重于讲解为什么malloc要这样设计</strong></p><h1 id="allocator要解决的核心矛盾在哪？"><a href="#allocator要解决的核心矛盾在哪？" class="headerlink" title="allocator要解决的核心矛盾在哪？"></a>allocator要解决的核心矛盾在哪？</h1><p><mark>allocator需要在有限的时间开销下，尽可能高效地利用虚拟地址空间，其必须在 分配&#x2F;释放的时间复杂度 与 堆空间的碎片率(空间利用率) 之间做权衡</mark></p><p><strong>追求速度意味着：</strong></p><p>为了快，allocator通常会使用固定内存大小块、此时可以做到O(1)分配，减少了遍历、合并和切割操作，更倾向于粗粒度管理内存块，比如fastbin和smallbin。但这样做的结果就是，由于不能切割，用户可能拿到“偏大的块”，导致内部碎片；同时由于不能频繁合并，在短时间内会导致外部碎片。<strong>速度增加—&gt;碎片增多—-&gt;空间利用率下降</strong></p><p><strong>追求空间利用率意味着：</strong></p><p>为了提高空间利用率，allocator必须做精细切割、频繁合并，通过遍历做best-fit并维护更复杂的数据结构(红黑树&#x2F;ordered bins)。这样做的结果就是，malloc&#x2F;free成本增大，多线程下锁竞争更严重。<strong>空间利用率升高—&gt;时间开销增大</strong></p><p><mark>所以，ptmalloc的分层设计，本质上就是把目标拆分到不同层级，用不同的策略尽可能优化。但是，不存在完美通用的allocator，对于allocator的不同实现，本质上就是在对这组平衡做出不同的权衡</mark></p><h1 id="内存池各层设计思路："><a href="#内存池各层设计思路：" class="headerlink" title="内存池各层设计思路："></a>内存池各层设计思路：</h1><p>如何解决矛盾？</p><p><strong>小块追求常数时间，大块追求空间利用率。因为前者是高频查找路径，需要提高查找效率；后者对空间利用率影响大，需要提高空间利用率。通过分层和延迟策略在性能和空间碎片间取得平衡</strong></p><p><strong>fastbin&#x2F;smallbin：热路径优化，对于小内存需要高频查找，设计思想是用空间换时间</strong>，采用exact-fit的思想，“只匹配完全相同大小的块”，虽然不合并会产生内存碎片，但是换来了free和malloc都是O(1)。如果采用best-fit，则势必要进行O(n)查找，并插入排序</p><p><strong>unsorted bin：free后chunk的“缓冲区+热缓存层”，用于延迟分类并提高复用概率。</strong> 程序中的访问的局部性原理——刚释放的内存，大概率会被马上申请，如果把这块内存又放到smallbin&#x2F;largebin中，下次malloc又要去查找，是浪费时间。所以，<strong>采用了经典的系统优化策略——写操作快、读时再整理，将unsorted bin作为一个缓冲区。</strong> 即，在free时不做复杂的分类，在malloc时再做分类。free时，所有合并完成后的内存块都会直接放到unsorted bin中，以利用访问的局部性原理；malloc时检查目标块是否是unsorted bin中的chunk，如果不是，则再把该chunk分类放回到smallbin&#x2F;largebin中，可以理解为访问的局部性原理此次失效</p><p><strong>largebin：属于低频大块路径，设计思想是时间换空间，允许牺牲一部分时间，以O(n)查找来换取更优的空间。</strong> 其选择了best-fit策略，即“选择最接近请求大小的空闲块”，目的是“最小化切割后的剩余空间，保留大块空间”：如果要180B内存，则应该找200B进行切割，而不是1000B。因为1000B切割后，剩余的空间的820B空间不大不小，也许很难被利用，这也是 <strong>外部碎片的常见来源——大块被切割为中等大小，导致难以适配未来请求</strong>；而切割200B剩余的20B内存较小，可以较易被选取.</p><p><strong>为什么不是first-fit？</strong> first-fit就会导致更严重内存碎片问题，例如连续多次的300B请求，会把1000B大块分割，最终剩下100B，难以分配</p><h1 id="brk-与mmap-决策思路"><a href="#brk-与mmap-决策思路" class="headerlink" title="brk()与mmap()决策思路"></a>brk()与mmap()决策思路</h1><p><strong>注意，常常说调用malloc就是直接通过brk()&#x2F;mmap()申请内存，实际上，这并不完全准确。虽然内存分配确实通过二者来实现，但是只有申请的内存较大，无法在bins中找到合适的缓存内存块时，才会调用这两个系统调用来分配内存。</strong></p><h2 id="1-brk-：堆区的线性扩展工具"><a href="#1-brk-：堆区的线性扩展工具" class="headerlink" title="1.brk()：堆区的线性扩展工具"></a>1.brk()：堆区的线性扩展工具</h2><p>核心机制：通过移动进程堆顶指针来动态扩展内存空间。</p><p>特点：</p><p>1.虚拟内存和物理内存的延迟绑定：brk仅仅修改虚拟内存边界，并不会理解分配物理内存。只有在首次访问虚拟内存，才会触发缺页中断，真正分配物理内存并建立映射关系</p><p>2.堆区内存的顺序释放：由于Linux VMA机制以及其分配内存的方式，所以释放内存时必须先释放高地址内存，再释放低地址内存。</p><h2 id="2-mmap-：独立映射"><a href="#2-mmap-：独立映射" class="headerlink" title="2.mmap()：独立映射"></a>2.mmap()：独立映射</h2><p>核心机制：建立虚拟内存区域和物理内存区域的映射关系</p><p>特点：</p><p>1.支持非连续内存分配与大块内存。</p><p>2.零拷贝特性提升效率。</p><p>3.独立释放避免内存碎片化。mmap通过munmap可以独立释放内存，减少内存的碎片化问题</p><h2 id="3-对比与选择"><a href="#3-对比与选择" class="headerlink" title="3.对比与选择"></a>3.对比与选择</h2><p>在内存区域上：brk分配的内存空间位于堆上，而mmap分配的内存空间位于文件映射区上</p><p>内存地址连续性：brk分配的内存区域属于堆的一部分，地址连续；mmap分配的内存是独立的，其通过vm_area_struct独立管理起来</p><p><strong>由这两个特点，我们可以推断出两种分配方式的内存碎片化程度：</strong></p><p>brk()动态调整brk指针，在堆区上进行地址的线性扩展，所有分配的内存块紧密相连的、连续的。这就决定了，在内存释放时，只有堆尾部的连续空闲区域，才能通过brk向回收，会退给操作系统，而虚拟地址碎片不可以从中间回收，其势必会导致内存碎片化程度较高</p><p>mmap()在文件映射区创建独立的内存映射区域，所有mmap的内存区域不一定是连续的，是多VMA模型。这就决定了在内存释放时，可以独立释放掉一整个mmap区域，内存碎片化程度较低，更利于大块释放</p><p><strong>此外，需要考虑两种系统调用本身的开销：</strong></p><p>brk()只需要动态调整指针值，操作简单便捷，系统调用开销较低，大约为100ns；mmap创建内存映射时，需要创建vm_area_struct并立即建立映射关系，开销较大，大于为500ns</p><h2 id="4-malloc中的策略选择"><a href="#4-malloc中的策略选择" class="headerlink" title="4.malloc中的策略选择"></a>4.malloc中的策略选择</h2><p><strong>在所需内存较小时(小于128KB)时：</strong> malloc选择通过brk()来分配内存。原因在于，小块内存的分配非常频繁，对于这种热路径，我们需要用空间换时间，选择<strong>系统调用成本更低</strong>的brk()。<strong>此外，这些小块的生命周期短，容易复用，不需要立即归还给操作系统，通过bins管理起来即可</strong>，似乎发挥不出mmap可立即归还物理内存的优势，反而增加了分配成本(这也是为什么只有小块内存通过bins管理——其容易复用)。brk()的另一个优势在于，其内存空间都是连续的，<strong>缓存命中率更高</strong></p><p><strong>在所需内存较大时(大于等于128KB)：</strong> malloc选择通过mmap()创建独立的内存映射来分配内存。原因在于，大块内存的分配频率较低，但是<strong>如果划分分配不当，就会导致较为严重的内存碎片。</strong> 此外，这些大块相比于小块，<strong>其占用空间大、生命周期长，不容易复用，所以不需要通过bins管理起来，free时需要尽早归还内存，避免大块长期占用heap中部，阻止heap top shrink</strong>。所以，采取mmap来分配内存(为什么只有小块内存通过bins管理)。尽管效率相对较低，但是瑕不掩瑜，可以理解为用时间换空间</p><h1 id="allocator、VMA和buddy-sysem三者的协作"><a href="#allocator、VMA和buddy-sysem三者的协作" class="headerlink" title="allocator、VMA和buddy sysem三者的协作"></a>allocator、VMA和buddy sysem三者的协作</h1><p>allocator只管理chunk，VMA管理虚拟内存区域，二者通过brk()&#x2F;mmap()&#x2F;munmap()系统调用协作关联，chunk并不与物理内存页有直接协作关系；VMA在缺页中断时，驱动物理页的分配，建立二者的协作关联</p><p><strong>malloc时 allocator与VMA的关联：</strong></p><p>如果直接命中bins中的chunk——VMA没有任何变化。如果是brk()扩展heap——则会扩大heap vm_area_struct的end指针与mm_struct中brk指针，并不创建新的vm_area_strct</p><p>如果是mmap()映射——则创建新的vm_area_struct用于描述这块映射区域，并插入到红黑树以及双向链表中管理起来</p><p><strong>free时 allocator与VMA的关联：</strong></p><p>如果free的是brk块且不触发trim——则只在allocator层有操作，VMA没有任何变化，因为VMA描述的是heap整体</p><p>如果free的是brk块且触发trim(heap shrink)——则会减小heap vm_area_struct的end指针与mm_struct中brk指针，并不销毁vm_area_strct</p><p>如果free mmap块——则删除对应的vm_area_struct，释放页表、释放物理页</p><p>VMA与buddy sysem的关联：缺页中断、页表机制，此处不展开</p>]]></content>
+      
+      
+      <categories>
+          
+          <category> 内存分配与管理 </category>
+          
+      </categories>
+      
+      
+    </entry>
+    
+    
+    
+    <entry>
       <title>【内存分配与管理】malloc原理剖析</title>
       <link href="/posts/0.html"/>
       <url>/posts/0.html</url>
@@ -37,22 +56,11 @@
     
     
     <entry>
-      <title>音乐</title>
-      <link href="/music/index.html"/>
-      <url>/music/index.html</url>
+      <title>关于</title>
+      <link href="/about/index.html"/>
+      <url>/about/index.html</url>
       
         <content type="html"><![CDATA[]]></content>
-      
-    </entry>
-    
-    
-    
-    <entry>
-      <title></title>
-      <link href="/css/custom.css"/>
-      <url>/css/custom.css</url>
-      
-        <content type="html"><![CDATA[/* 页脚与头图透明 */#footer {  background: transparent !important;}#page-header {  background: transparent !important;}/* 白天模式遮罩透明 */#footer::before {  background: transparent !important;}#page-header::before {  background: transparent !important;}/* 夜间模式遮罩透明 */[data-theme="dark"] #footer::before {  background: transparent !important;}[data-theme="dark"] #page-header::before {  background: transparent !important;}]]></content>
       
     </entry>
     
@@ -70,9 +78,9 @@
     
     
     <entry>
-      <title>关于</title>
-      <link href="/about/index.html"/>
-      <url>/about/index.html</url>
+      <title>第一个标签</title>
+      <link href="/tags/tags.html"/>
+      <url>/tags/tags.html</url>
       
         <content type="html"><![CDATA[]]></content>
       
@@ -81,11 +89,22 @@
     
     
     <entry>
-      <title>第一个标签</title>
-      <link href="/tags/tags.html"/>
-      <url>/tags/tags.html</url>
+      <title>音乐</title>
+      <link href="/music/index.html"/>
+      <url>/music/index.html</url>
       
         <content type="html"><![CDATA[]]></content>
+      
+    </entry>
+    
+    
+    
+    <entry>
+      <title></title>
+      <link href="/css/custom.css"/>
+      <url>/css/custom.css</url>
+      
+        <content type="html"><![CDATA[/* 页脚与头图透明 */#footer {  background: transparent !important;}#page-header {  background: transparent !important;}/* 白天模式遮罩透明 */#footer::before {  background: transparent !important;}#page-header::before {  background: transparent !important;}/* 夜间模式遮罩透明 */[data-theme="dark"] #footer::before {  background: transparent !important;}[data-theme="dark"] #page-header::before {  background: transparent !important;}]]></content>
       
     </entry>
     
