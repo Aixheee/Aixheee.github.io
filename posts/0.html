@@ -1,9 +1,9 @@
-<!DOCTYPE html><html lang="zh-CN" data-theme="light"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0,viewport-fit=cover"><title>【内存分配与管理】malloc原理剖析 | Aixheee`Blog</title><meta name="author" content="Aixheee"><meta name="copyright" content="Aixheee"><meta name="format-detection" content="telephone=no"><meta name="theme-color" content="#ffffff"><meta name="description" content="arena在具体说malloc之前，我们先分清楚几个常见的概念：allocator、malloc和ptmalloc malloc理解为分配内存的接口，allocator是一个负责内存分配和回收的具体策略实现。在Linux + glibc默认环境下，通过ptmalloc策略来实现(ptmalloc是一个名称)；Google实现了tcmalloc策略，微软实现了mimalloc…. ptmalloc针">
+<!DOCTYPE html><html lang="zh-CN" data-theme="light"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0,viewport-fit=cover"><title>【内存分配与管理】malloc原理剖析 | Aixheee`Blog</title><meta name="author" content="Aixheee"><meta name="copyright" content="Aixheee"><meta name="format-detection" content="telephone=no"><meta name="theme-color" content="#ffffff"><meta name="description" content="本文将主要梳理一下malloc的内存块管理方式，以及其内存池是如何实现的。 在具体说malloc之前，我们先分清楚几个常见的概念：allocator、malloc和ptmalloc：malloc理解为分配内存的接口，allocator是一个负责内存分配和回收的具体策略实现。在Linux + glibc默认环境下，通过ptmalloc策略来实现(ptmalloc是一个名称)；Google实现了tcm">
 <meta property="og:type" content="article">
 <meta property="og:title" content="【内存分配与管理】malloc原理剖析">
 <meta property="og:url" content="http://www.aixheee.top/posts/0.html">
 <meta property="og:site_name" content="Aixheee&#96;Blog">
-<meta property="og:description" content="arena在具体说malloc之前，我们先分清楚几个常见的概念：allocator、malloc和ptmalloc malloc理解为分配内存的接口，allocator是一个负责内存分配和回收的具体策略实现。在Linux + glibc默认环境下，通过ptmalloc策略来实现(ptmalloc是一个名称)；Google实现了tcmalloc策略，微软实现了mimalloc…. ptmalloc针">
+<meta property="og:description" content="本文将主要梳理一下malloc的内存块管理方式，以及其内存池是如何实现的。 在具体说malloc之前，我们先分清楚几个常见的概念：allocator、malloc和ptmalloc：malloc理解为分配内存的接口，allocator是一个负责内存分配和回收的具体策略实现。在Linux + glibc默认环境下，通过ptmalloc策略来实现(ptmalloc是一个名称)；Google实现了tcm">
 <meta property="og:locale" content="zh_CN">
 <meta property="og:image" content="http://www.aixheee.top/img/avatar.jpg">
 <meta property="article:published_time" content="2026-05-09T16:00:00.000Z">
@@ -170,9 +170,9 @@
     display: none !important;
   }
 </style>
-<!-- hexo injector head_end start --><link rel="stylesheet" href="https://npm.elemecdn.com/hexo-butterfly-categories-card@1.0.0/lib/categorybar.css"><!-- hexo injector head_end end --><meta name="generator" content="Hexo 8.1.1"></head><body><div class="bg-animation" id="web_bg" style="background-image: url(https://raw.githubusercontent.com/Aixheee/Aixheee.github.io/main/img/back.jpg);"></div><div id="sidebar"><div id="menu-mask"></div><div id="sidebar-menus"><div class="avatar-img text-center"><img src="/img/avatar.jpg" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="site-data text-center"><a href="/archives/"><div class="headline">文章</div><div class="length-num">1</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">1</div></a></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> 分类</span></a></div><div class="menus_item"><span class="site-page group"><i class="fa-fw fa fa-heartbeat"></i><span> 清单</span><i class="fas fa-chevron-down"></i></span><ul class="menus_item_child"><li><a class="site-page child" href="/music/"><i class="fa-fw fas fa-music"></i><span> 音乐</span></a></li><li><a class="site-page child" href="/Gallery/"><i class="fa-fw fas fa-images"></i><span> 照片</span></a></li><li><a class="site-page child" href="/movies/"><i class="fa-fw fas fa-video"></i><span> 电影</span></a></li></ul></div><div class="menus_item"><a class="site-page" href="/link/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heart"></i><span> 关于</span></a></div></div></div></div><div class="post" id="body-wrap"><header class="post-bg" id="page-header"><nav id="nav"><span id="blog-info"><a class="nav-site-title" href="/"><span class="site-name">Aixheee`Blog</span></a><a class="nav-page-title" href="/"><span class="site-name">【内存分配与管理】malloc原理剖析</span><span class="site-name"><i class="fa-solid fa-circle-arrow-left"></i><span>  返回首页</span></span></a></span><div id="menus"><div id="search-button"><span class="site-page social-icon search"><i class="fas fa-search fa-fw"></i><span> 搜索</span></span></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> 分类</span></a></div><div class="menus_item"><span class="site-page group"><i class="fa-fw fa fa-heartbeat"></i><span> 清单</span><i class="fas fa-chevron-down"></i></span><ul class="menus_item_child"><li><a class="site-page child" href="/music/"><i class="fa-fw fas fa-music"></i><span> 音乐</span></a></li><li><a class="site-page child" href="/Gallery/"><i class="fa-fw fas fa-images"></i><span> 照片</span></a></li><li><a class="site-page child" href="/movies/"><i class="fa-fw fas fa-video"></i><span> 电影</span></a></li></ul></div><div class="menus_item"><a class="site-page" href="/link/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heart"></i><span> 关于</span></a></div></div><div id="toggle-menu"><span class="site-page"><i class="fas fa-bars fa-fw"></i></span></div></div></nav><div id="post-info"><h1 class="post-title">【内存分配与管理】malloc原理剖析</h1><div id="post-meta"><div class="meta-firstline"><span class="post-meta-date"><i class="far fa-calendar-alt fa-fw post-meta-icon"></i><span class="post-meta-label">发表于</span><time class="post-meta-date-created" datetime="2026-05-09T16:00:00.000Z" title="发表于 2026-05-10 00:00:00">2026-05-10</time><span class="post-meta-separator">|</span><i class="fas fa-history fa-fw post-meta-icon"></i><span class="post-meta-label">更新于</span><time class="post-meta-date-updated" datetime="2026-05-09T16:00:00.000Z" title="更新于 2026-05-10 00:00:00">2026-05-10</time></span><span class="post-meta-categories"><span class="post-meta-separator">|</span><i class="fas fa-inbox fa-fw post-meta-icon"></i><a class="post-meta-categories" href="/categories/%E5%86%85%E5%AD%98%E5%88%86%E9%85%8D%E4%B8%8E%E7%AE%A1%E7%90%86/">内存分配与管理</a></span></div><div class="meta-secondline"><span class="post-meta-separator">|</span><span class="post-meta-pv-cv" id="" data-flag-title=""><i class="far fa-eye fa-fw post-meta-icon"></i><span class="post-meta-label">浏览量:</span><span id="busuanzi_value_page_pv"><i class="fa-solid fa-spinner fa-spin"></i></span></span></div></div></div></header><main class="layout" id="content-inner"><div id="post"><article class="container post-content" id="article-container"><h1 id="arena"><a href="#arena" class="headerlink" title="arena"></a>arena</h1><p>在具体说malloc之前，我们先分清楚几个常见的概念：allocator、malloc和ptmalloc</p>
-<p>malloc理解为分配内存的接口，allocator是一个负责内存分配和回收的具体策略实现。在Linux + glibc默认环境下，通过ptmalloc策略来实现(ptmalloc是一个名称)；Google实现了tcmalloc策略，微软实现了mimalloc….</p>
-<p>ptmalloc针对堆管理，最顶层的管理结构为malloc_state，即arena</p>
+<!-- hexo injector head_end start --><link rel="stylesheet" href="https://npm.elemecdn.com/hexo-butterfly-categories-card@1.0.0/lib/categorybar.css"><!-- hexo injector head_end end --><meta name="generator" content="Hexo 8.1.1"></head><body><div class="bg-animation" id="web_bg" style="background-image: url(https://raw.githubusercontent.com/Aixheee/Aixheee.github.io/main/img/back.jpg);"></div><div id="sidebar"><div id="menu-mask"></div><div id="sidebar-menus"><div class="avatar-img text-center"><img src="/img/avatar.jpg" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="site-data text-center"><a href="/archives/"><div class="headline">文章</div><div class="length-num">1</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">1</div></a></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> 分类</span></a></div><div class="menus_item"><span class="site-page group"><i class="fa-fw fa fa-heartbeat"></i><span> 清单</span><i class="fas fa-chevron-down"></i></span><ul class="menus_item_child"><li><a class="site-page child" href="/music/"><i class="fa-fw fas fa-music"></i><span> 音乐</span></a></li><li><a class="site-page child" href="/Gallery/"><i class="fa-fw fas fa-images"></i><span> 照片</span></a></li><li><a class="site-page child" href="/movies/"><i class="fa-fw fas fa-video"></i><span> 电影</span></a></li></ul></div><div class="menus_item"><a class="site-page" href="/link/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heart"></i><span> 关于</span></a></div></div></div></div><div class="post" id="body-wrap"><header class="post-bg" id="page-header"><nav id="nav"><span id="blog-info"><a class="nav-site-title" href="/"><span class="site-name">Aixheee`Blog</span></a><a class="nav-page-title" href="/"><span class="site-name">【内存分配与管理】malloc原理剖析</span><span class="site-name"><i class="fa-solid fa-circle-arrow-left"></i><span>  返回首页</span></span></a></span><div id="menus"><div id="search-button"><span class="site-page social-icon search"><i class="fas fa-search fa-fw"></i><span> 搜索</span></span></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> 分类</span></a></div><div class="menus_item"><span class="site-page group"><i class="fa-fw fa fa-heartbeat"></i><span> 清单</span><i class="fas fa-chevron-down"></i></span><ul class="menus_item_child"><li><a class="site-page child" href="/music/"><i class="fa-fw fas fa-music"></i><span> 音乐</span></a></li><li><a class="site-page child" href="/Gallery/"><i class="fa-fw fas fa-images"></i><span> 照片</span></a></li><li><a class="site-page child" href="/movies/"><i class="fa-fw fas fa-video"></i><span> 电影</span></a></li></ul></div><div class="menus_item"><a class="site-page" href="/link/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heart"></i><span> 关于</span></a></div></div><div id="toggle-menu"><span class="site-page"><i class="fas fa-bars fa-fw"></i></span></div></div></nav><div id="post-info"><h1 class="post-title">【内存分配与管理】malloc原理剖析</h1><div id="post-meta"><div class="meta-firstline"><span class="post-meta-date"><i class="far fa-calendar-alt fa-fw post-meta-icon"></i><span class="post-meta-label">发表于</span><time class="post-meta-date-created" datetime="2026-05-09T16:00:00.000Z" title="发表于 2026-05-10 00:00:00">2026-05-10</time><span class="post-meta-separator">|</span><i class="fas fa-history fa-fw post-meta-icon"></i><span class="post-meta-label">更新于</span><time class="post-meta-date-updated" datetime="2026-05-09T16:00:00.000Z" title="更新于 2026-05-10 00:00:00">2026-05-10</time></span><span class="post-meta-categories"><span class="post-meta-separator">|</span><i class="fas fa-inbox fa-fw post-meta-icon"></i><a class="post-meta-categories" href="/categories/%E5%86%85%E5%AD%98%E5%88%86%E9%85%8D%E4%B8%8E%E7%AE%A1%E7%90%86/">内存分配与管理</a></span></div><div class="meta-secondline"><span class="post-meta-separator">|</span><span class="post-meta-pv-cv" id="" data-flag-title=""><i class="far fa-eye fa-fw post-meta-icon"></i><span class="post-meta-label">浏览量:</span><span id="busuanzi_value_page_pv"><i class="fa-solid fa-spinner fa-spin"></i></span></span></div></div></div></header><main class="layout" id="content-inner"><div id="post"><article class="container post-content" id="article-container"><p>本文将主要梳理一下malloc的内存块管理方式，以及其内存池是如何实现的。</p>
+<p>在具体说malloc之前，我们先分清楚几个常见的概念：allocator、malloc和ptmalloc：malloc理解为分配内存的接口，allocator是一个负责内存分配和回收的具体策略实现。在Linux + glibc默认环境下，通过ptmalloc策略来实现(ptmalloc是一个名称)；Google实现了tcmalloc策略，微软实现了mimalloc….</p>
+<h1 id="arena"><a href="#arena" class="headerlink" title="arena"></a>arena</h1><p>ptmalloc针对堆管理，最顶层的管理结构为malloc_state，即arena</p>
 <pre><code>arena（分配器实例）
   └── heap（一段连续内存区域）
         └── chunk（用户分配单位）
@@ -278,13 +278,13 @@ struct malloc_state
 <p><strong>从生命周期控制来看</strong>：堆内存的释放允许任意顺序，生命周期不可预测。如果没有allocator，无法记录哪些内存块是空闲&#x2F;已用的。相比于栈，栈内存的分配是严格按照LIFO——后分配、先释放的，生命周期相互嵌套，出作用域后直接释放，不存在该问题</p>
 <p><strong>从碎片控制的角度来看</strong>：由于堆内存的分配在空间上不是连续的，这就会可能出现外部碎片问题，如果没有allocator，就无法合并、切割，否则很快就无法分配大块内存区域</p>
 <p><strong>从系统调用申请内存的角度来看</strong>：brk()&#x2F;sbrk()&#x2F;mmap()属于系统调用，如果每次申请内存都要调用这三个系统调用的其中之一，触发用户态到内核态的切换，是非常影响性能的。相比之下，栈的内存分配只需要通过移动栈指针即可</p>
-<h2 id="内存池具体管理方法"><a href="#内存池具体管理方法" class="headerlink" title="内存池具体管理方法"></a>内存池具体管理方法</h2><h3 id="如何描述堆虚拟内存"><a href="#如何描述堆虚拟内存" class="headerlink" title="如何描述堆虚拟内存"></a>如何描述堆虚拟内存</h3><h4 id="隐式链表技术"><a href="#隐式链表技术" class="headerlink" title="隐式链表技术"></a>隐式链表技术</h4><p><strong>malloc将整个堆内存空间分为连续的、大小不一的chunk，chunk即为堆内存的最小描述单位。</strong></p>
-<p>为了区分不同的内存块的信息，比如已分配、未分配……会将这些信息直接嵌入到chunk内部(否则没地方存储这些信息——如果要分配内存，则先要分配内存存储“要分配的内存的信息”…..这是在套娃)</p>
+<h2 id="内存池具体管理方法"><a href="#内存池具体管理方法" class="headerlink" title="内存池具体管理方法"></a>内存池具体管理方法</h2><h3 id="如何描述堆虚拟内存"><a href="#如何描述堆虚拟内存" class="headerlink" title="如何描述堆虚拟内存"></a>如何描述堆虚拟内存</h3><h4 id="隐式链表技术"><a href="#隐式链表技术" class="headerlink" title="隐式链表技术"></a>隐式链表技术</h4><p><strong>malloc将整个堆内存空间分为连续的、大小不一的chunk，chunk即为堆内存的最小管理单位。</strong></p>
+<p>为了区分不同的内存块的信息，比如已分配、未分配……会将这些信息直接嵌入到chunk内部</p>
 <p>堆内存要求chunk的大小必须是8的整数倍，因此chunk size的后三位是无效的，为了充分利用内存，就将这三位作为chunk的标志位。</p>
 <p>而padding部分则是用于内存对齐，让整个chunk为8的整数倍</p>
 <p>allocated chunk：</p>
 <p><img src="http://img.aixheee.top/de2b88c5-934d-4d50-b180-15606606372c.png"></p>
-<p>free chunk：此时原先的用户数据区中，</p>
+<p>free chunk：</p>
 <p><img src="http://img.aixheee.top/c7ceb5b7-2324-422a-a3d3-fa8209fde08d.png"></p>
 <p>此时，整个堆内存组织为一个连续的，已分配或未分配的chunk序列</p>
 <p><img src="http://img.aixheee.top/54cc37b7-bd5e-4f5a-b461-72f0c74e76e4.png"></p>
@@ -323,27 +323,29 @@ struct malloc_state
 </code></pre>
 <p><img src="http://img.aixheee.top/d7b8c7f9-aaee-4fd6-ba81-9a41a2199500.png"></p>
 <p><img src="http://img.aixheee.top/bdf0150a-a8d7-4494-be35-aa07dda8bdf9.png"></p>
-<h4 id="fast-bins"><a href="#fast-bins" class="headerlink" title="fast bins"></a>fast bins</h4><p>规定下文中，chunk size代表malloc_chunk的实际大小，chunk unused size为实际可用大小，前者比后者大16字节，用于存储prev_size，size以及两个指针</p>
+<h4 id="fast-bins"><a href="#fast-bins" class="headerlink" title="fast bins"></a>fast bins</h4><p>（规定下文中，chunk size代表malloc_chunk的实际大小，chunk unused size为实际可用大小，前者比后者大16字节，用于存储prev_size，size以及两个指针）</p>
+<p>作用：存放小尺寸且快速分配的空闲块</p>
 <p><strong>设计目的：快速地分配和释放小内存</strong></p>
 <p>程序中会经常申请和释放较小的内存空间。如果一释放就被分配器合并为一个较大的chunk，那么一旦又有小块内存的请求，那么分配器又需要把大的空闲内存做切分，无疑是比较低效的。所以，引入了较小块内存fast bin。</p>
-<p>**特点：**链表特点：每个fast bin都是单链表且总数为10，10个fast bin中所包含的fast chunk size是按照递增8字节排序的，比如第一个fast bin中所有的fast chunk size为16字节，第二个fast bin中所有的fast chunk size为32字节</p>
+<p><strong>特点：</strong> 链表特点：每个fast bin都是单链表且总数为10，10个fast bin中所包含的fast chunk size是按照递增16字节排序的，比如第一个fast bin中所有的fast chunk size为16字节，第二个fast bin中所有的fast chunk size为32字节</p>
 <blockquote>
 <p>为什么是单链表+LIFO？通过单链表就可以实现删除和添加操作。删除(malloc分配)即进行头删，添加(free释放)操作即头插，不需要对中间的节点进行操作，为O(1)操作。之所以要LIFO，是因为根据temporal locality原理，刚释放的chunk很可能马上再用，LIFO可以提高效率</p>
 </blockquote>
 <p>节点特点：fast bin中的fast chunk大小较小，chunk unused不大于64字节，且所有的fast chunk不会自动合并，有<strong>延迟合并的特点</strong>。</p>
-<p>合并只会发生在malloc请求large chunk、malloc请求smallbin但是smallbin为空、free 非 fastbin chunk或显示malloc_consolidate()，此时会触发malloc_consolidate()，将所有的fastbin chunk取出并与相邻块合并，放入到unsorted bin中</p>
+<p>合并只会发生在malloc请求large chunk、malloc请求smallbin但是smallbin为空、free 非 fastbin chunk或显示地调用malloc_consolidate()，此时会触发malloc_consolidate()，将所有的fastbin chunk取出并与相邻块合并，放入到unsorted bin中</p>
 <p>此外，会将fast free chunk的prev标志位置为1，保证不会对fast free chunk进行合并操作，这是其设计目的决定的。</p>
-<h4 id="unsorted-bin"><a href="#unsorted-bin" class="headerlink" title="unsorted bin"></a>unsorted bin</h4><p>设计目的：1.<strong>降低free成本</strong>。如果每次free内存，都立刻判断是smallbin还是largebin，larginbin还要维护有序结构，并加入到其中，效率较低。所以，会首先合并相邻chunk并先放进unsorted bin中</p>
-<p>2.<strong>提高命中率</strong>。程序中有个重要现象——刚释放的内存，大概率会被马上申请，可以理解为访问的局部性原理。所以如果把这块内存又放到smallbin&#x2F;largebin中，下次malloc又要去查找，浪费时间。所以先放入到unsorted bin中，如果大小合适就会</p>
-<p><strong>所以，unsorted bin是free后chunk的“缓冲区+热缓存层”，用于延迟分类并提高复用概率</strong></p>
+<h4 id="unsorted-bin"><a href="#unsorted-bin" class="headerlink" title="unsorted bin"></a>unsorted bin</h4><p>作用：当一个chunk被释放时，它首先被放入unsorted bin，而不是直接放入其他bins。其是free后chunk的“缓冲区+热缓存层”，用于延迟分类并提高复用概率</p>
+<p>设计目的：1.<strong>降低free成本</strong>。如果每次free内存，都立刻判断是smallbin还是largebin，larginbin还要维护有序结构，并加入到其中，效率较低。所以，会首先合并相邻chunk并先放进unsorted bin中</p>
+<p>2.<strong>提高命中率</strong>。程序中有个重要现象——刚释放的内存，大概率会被马上申请，可以理解为访问的局部性原理。所以如果把这块内存又放到smallbin&#x2F;largebin中，相比于将这些热数据放在一个unsorted bin中，其查找时间会更多</p>
 <p>特点：只有一个unsorted bin，其为双向链表且不排序，FIFO——头插(释放内存)，遍历时从尾部开始查，并优先尾删(malloc分配)</p>
 <blockquote>
 <p>为什么是双向链表 + FIFO？因为遍历时可能删除中间节点，而单链表删除中间节点的成本高，为O(n)，在知道要删除的节点的情况下，需要通过遍历获取前驱节点。FIFO的效果是，如果freeABC，则顺序为C–&gt;B–&gt;A，但是malloc检查是从尾部A开始检查的，目的是让最早被释放的内存优先被检查，防止某些块长期滞留</p>
 </blockquote>
-<h4 id="small-bin"><a href="#small-bin" class="headerlink" title="small bin"></a>small bin</h4><p>特点：</p>
-<p>链表本身：共62个small bin，为双向链表，FIFO——内存释放操作就将新的chunk头插，分配操作就尾删</p>
-<p>节点：一个small bin中的所有free small chunk大小相等，第一个small bin的size为16字节，后续递增8</p>
-<h4 id="large-bin"><a href="#large-bin" class="headerlink" title="large bin"></a>large bin</h4><p>特点：和small bin类似，唯一区别在于单一large bin中每个chunk的大小不是相同的，从链表头到链表尾部呈现递增趋势</p>
+<h4 id="small-bin"><a href="#small-bin" class="headerlink" title="small bin"></a>small bin</h4><p>作用：用于管理比 fast bins 稍大一些的小尺寸空闲块，支持合并</p>
+<p>链表本身特点：共62个small bin，为双向链表，FIFO——内存释放操作就将新的chunk头插，分配操作就尾删</p>
+<p>节点特点：一个small bin中的所有free small chunk大小相等，第一个small bin的size为16字节，后续递增8</p>
+<h4 id="large-bin"><a href="#large-bin" class="headerlink" title="large bin"></a>large bin</h4><p>作用：用于管理超过 small bin 范围的大尺寸空闲块</p>
+<p>链表本身特点：其大体逻辑和small bin类似，区别在于单一large bin中每个chunk的大小不是相同的，从链表头到链表尾部呈现递增趋势，采用范围管理策略，而不是small bin的固定大小管理策略</p>
 <p><strong>关于bins的初始化时机：</strong></p>
 <p>注意，bins不是“预分配内存”的缓存池，而是已经分配过、又被free的chunk回收站。在第一次malloc前，bins完全是空的，直至第一块内存区域被free，如果大小较小则放入fastbins，否则合并并放入到unsorted bin中，再分类放入到smallbin&#x2F;largebin中</p>
 <h2 id="malloc流程梳理"><a href="#malloc流程梳理" class="headerlink" title="malloc流程梳理"></a>malloc流程梳理</h2><p>1.void* p &#x3D; malloc(size)。内部首先内存对齐(8&#x2F;16字节)，并加上chunk header大小，得到normalized size</p>
@@ -356,14 +358,14 @@ struct malloc_state
 </code></pre>
 <p>3.选择arena并获取到其对应的锁，开始从bins中查找何时的chunk，此后的查找都是在持锁的状态下完成的</p>
 <p>4.fastbin中查找。如果nb属于fastbin范围内(80字节左右)，则做<mark>精准匹配</mark>，如果fastbin[index]非空，则返回，否则进入下一次</p>
-<p>5.smllbin。如果nb属于smallbin范围内(小于512字节)，则将nb转换为smallbins索引，做<mark>精准匹配</mark>，并从对应的smallbin中取出一个chunk并返回</p>
+<p>5.smallbin。如果nb属于smallbin范围内(小于512字节)，则将nb转换为smallbins索引，做<mark>精准匹配</mark>，并从对应的smallbin中取出一个chunk并返回</p>
 <pre><code>index = size_to_smallbin(nb)
 if smallbin[index] 非空
     取一个 chunk
     标记 inuse
     返回
 </code></pre>
-<p>6.unsorted bin延迟分类层。做<mark>最接近匹配</mark>，遍历unsorted bin，在第一次满足nb&gt;&#x3D;chunk.size时，将该chunk从unsorted bin中移除，并将其做切割，将富裕部分根据其大小<strong>插入到smallbin&#x2F;largebin中</strong>，并返回结果。注意，<strong>对于不符合大于等于条件的chunk都会直接被分类到smallbin或largebin中</strong></p>
+<p>6.unsorted bin延迟分类层。做<mark>最接近匹配</mark>，遍历unsorted bin，在第一次满足nb&gt;&#x3D;chunk.size时，将该chunk从unsorted bin中移除，并将其做切割，将富裕部分根据其大小<strong>插入到smallbin&#x2F;largebin中</strong>，并返回结果。注意，<strong>对于不符合大于等于条件的chunk都会被转移到smallbin或largebin中</strong></p>
 <p>如果遍历完unsorted bin依然没有找到合适块，即nb&lt;所有chunk.size，此时unsorted也会被清空，因为已经被分类</p>
 <pre><code>for (chunk in unsorted):
     if chunk.size &gt;= nb:
@@ -375,10 +377,11 @@ if smallbin[index] 非空
     else:
         将该 chunk 分类到 smallbin 或 largebin
 </code></pre>
-<p>7.largebin。做<strong>最接近匹配</strong>，目标是找到&gt;&#x3D;nb的最小块，会先定位到index，得到largebins[index]，再在其中找到目标快，如果有剩余则做切割，将剩余部分插入到smallbin或largebin中，并返回</p>
+<p>7.largebin。做<mark>最接近匹配</mark>，目标是找到&gt;&#x3D;nb的最小块，会先定位到index，得到largebins[index]，再在其中找到目标快，如果有剩余则做切割，将剩余部分插入到smallbin或largebin中，并返回</p>
 <p>8.top chunk。如果top.size()&gt;&#x3D;nb，则从top中做切割，将剩余部分插入到smallbin或largebin中，更新top指针，并返回</p>
 <p>9.向系统申请内存以扩展堆。如果nb&lt;128KB，则调用brk()扩展heap，更新top chunk并再次尝试分配；如果nb&gt;&#x3D;128KB，则调用mmap()创建匿名映射，返回mmap chunk</p>
 <p>10.返回地址。此时，用户得到的是chunk+header_size，但是还没有物理页</p>
+<p>可能存在的问题：</p>
 <p><strong>既然unsorted bin作为热缓存层，为什么是malloc查找顺序是fastbin-&gt;smallbin，而不是先查unsorted bin？</strong></p>
 <p>因为smallbin是精确匹配层，如果请求在smallbin的范围内，直接通过O(1)时间复杂度即可确定是否存在可用的内存块：</p>
 <pre><code>smallbin[index] 非空 → 直接返回
