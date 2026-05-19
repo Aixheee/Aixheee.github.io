@@ -4,6 +4,25 @@
   
     
     <entry>
+      <title>【内存分配与管理】理解new与placement new</title>
+      <link href="/posts/0.html"/>
+      <url>/posts/0.html</url>
+      
+        <content type="html"><![CDATA[<p>前三篇文章中，我们已经了解了malloc的底层实现以及与我们平时接触最为密切的的堆栈内存分配，本篇文章将从malloc的底层机制到new的面向对象封装，了解new的设计理念、底层实现以及正确用法</p><h1 id="new表达式"><a href="#new表达式" class="headerlink" title="new表达式"></a>new表达式</h1><p>我们先来从最表层来对比一下malloc与new：<br><strong>1.概念上的区别</strong></p><p>        malloc&#x2F;free是C&#x2F;C++标准库函数，而new&#x2F;delete是C++关键字，或者说是new表达式。因此malloc仅仅只分配内存，而不会进行初始化类成员的工作，new不止分配内存，而且还调用类的构造函数。</p><p><strong>2.返回类型的不同</strong></p><p>        new内存分配成功时候，返回的是对象类型的指针，不需要进行类型转换，从这个角度来说比较安全malloc内存分配成功则返回 void类型（泛型指针），必须通过强制类型转换将 void* 转换成需要的类型。</p><p><strong>3.分配失败后的返回值不同</strong></p><p>        malloc失败，会返回空指针。new失败，默认是抛出异常，要捕获异常bad_alloc</p><p><strong>4.是否需要指定内存大小</strong></p><p>        new操作符申请内存的时候不需要指定内存块的大小，编译器会自动根据类型信息来计算malloc需要显示的指出内存的大小。</p><p>这只是浅层表象，我们该如何理解new呢？</p><h2 id="理解new"><a href="#理解new" class="headerlink" title="理解new"></a>理解new</h2><p><strong>new不仅仅是”申请内存“，本质上是一个将”内存分配“和”对象构造“绑定在一起的语法糖。</strong></p><p>从<strong>底层</strong>来看，其首先调用全局的operator new分配原始内存（通常基于malloc实现），然后通过在这块内存上调用构造函数，对象的生命周期开始。相对的，delete则先调用析构函数结束对象的生命周期，再调用opeartor delete释放内存。</p><p><strong>这背后反应了C++对对象的一个核心理解：对象由”内存存储“和”生命周期“两部分组成，二者在默认情况下是绑定的，目的是提供简单对象语义。</strong></p><p>但是，C++也同样允许我们将二者拆开单独控制，将“内存的生命周期”和”对象的生命周期“解耦，实现更为精细的控制。</p><p>比如，在智能指针make_shared的实现中，对象和控制块是统一分配的，因此内存无法单独释放，但是对象的生命周期需要在强引用归零时结束。此时，就需要通过”字符数组+placement new“将“内存的生命周期”和”对象的生命周期“解耦，并通过显式析构结束对象生命周期。这既保证了及时结束对象生命周期，又不会在释放控制块时导致对资源对象的双重析构</p><p>所以可以说，<strong>new&#x2F;delete 的设计本质是：在提供简单对象语义的同时，也允许程序员在需要时精细控制内存和对象生命周期</strong>，这是 C++ 能实现智能指针、内存池等高级机制的基础。</p><p><strong>现在，我们再来对比一下malloc和new，理解为什么有了malloc&#x2F;free为什么还要new&#x2F;delete？</strong></p><p><strong>从C++面向对象的特点出发：</strong> C语言是面向过程的，其关注的是“数据+操作”，并不严格区分“内存”和“对象”，所以只需要通过malloc&#x2F;free来管理内存的存储期即可。而C++是面向对象的，内存仅仅是对象的一部分，对象还包括构造、析构等生命周期的管理，<strong>需要区分“内存生命周期”和“对象的生命周期”</strong>。<strong>而new&#x2F;delete将内存分配和对象的生命周期绑定起来，做面向对象的封装，从而支持RAII思想与异常安全，符合C++语义要求</strong></p><p>具体来说，RAII要求资源创建即绑定到对象的生命周期中，在构造时申请资源，析构时释放资源，以防止资源的泄露。如果没有new&#x2F;delete，那么用户需要手动malloc+construct+destruct+free，这一流程既繁琐又容易出错，破坏了面向对象的抽象和封装的核心原则，内存管理负担过重</p><p><strong>从异常安全的角度来说：</strong> new&#x2F;delete通过try-catch+回滚析构，保证了在对象构造时能正确调用operator delete来释放申请资源，防止内存泄露。如果没有new&#x2F;delete，那么用户始终都需要手动try-catch来保证对象构造时的异常安全，这使得资源管理逻辑与业务逻辑深度耦合，代码复杂度急剧上升，且难以在所有可能的分支上保证正确的资源释放。</p><h2 id="new底层原理"><a href="#new底层原理" class="headerlink" title="new底层原理"></a>new底层原理</h2><p><strong>new表达式在编译器展开后，首先调用operator new分配原始内存（通常基于malloc实现），然后调用构造函数完成对象的初始化。如果构造函数抛出异常，则会被try-catch捕获，并调用对应参数的operator delete，将operator new申请的内存释放，防止内存泄露</strong></p><pre><code>T* p = new T(args);//类似于下面逻辑：void* mem = operator new(sizeof(T));  // ① 分配try {    p = static_cast&lt;T*&gt;(mem);    p-&gt;T::T(1, 2);                   // ② 构造} catch (...) {    operator delete(mem);            // ③ 构造失败回滚    throw;};</code></pre><p><strong>operator new是C++提供的可重载内存分配函数，用于为new分配原始内存，其默认调用的就是全局的::operator new</strong></p><p>其逻辑是，尝试通过malloc进行内存分配，<mark>如果分配失败</mark>，则会循环调用new-handler处理函数——如果用户没有手动设置，则会直接抛出std::bad_alloc异常；如果设置了，则会在调用后再次尝试malloc，为一个死循环</p><pre><code>// libstdc++-v3/libsupc++/new_op.ccvoid* operator new(std::size_t size) _GLIBCXX_THROW (std::bad_alloc) {    if (size == 0)        size = 1;    void* p;    while ((p = malloc(size)) == 0) {  // 核心：调用 malloc        // 如果 malloc 失败，尝试调用 new_handler        std::new_handler nh = std::get_new_handler();        if (nh)            nh();  // 用户可能释放一些内存        else            throw std::bad_alloc();    }    return p;}</code></pre><h2 id="operator-new重载"><a href="#operator-new重载" class="headerlink" title="operator new重载"></a>operator new重载</h2><p><strong>为什么需要重载？</strong></p><ul><li><p><strong>用于检测使用上的错误。</strong> 比如，对于越界访问new分配的内存的情况，我们可以在内存空间的头部和尾部的额外的空间，填充特定的标志位置，并在operator delete时便可以检查出标志内容是否被修改</p><pre><code>void* operator new(size_t size) {    void* p = std::malloc(size + extra);    // 写 guard bytes    return p;}</code></pre></li><li><p><strong>提高效率。</strong> operator new和operator delete针对的是“通用分配”，其需要对各种内存分配需求做适配，所以表现更为均衡。所以，如果程序大部分情况下，对内存的分配要求都是相同的，则可以制定相应的分配策略</p></li><li><p><strong>统计使用信息</strong></p></li></ul><p><strong>如何写一个正确的operator new？</strong></p><ul><li><p><strong>正确处理size &#x3D;&#x3D; 0的情况</strong>。operator new(0)必须返回一个“可区分”的空指针，常见做法是将size设置为1，并分配一块大小为1的内存块</p></li><li><p><strong>支持new-handler</strong>。在分配失败时，循环调用std::get_new_handler()获取到设定的new_headler函数，让handler决定如何处理，比如释放内存&#x2F;终止程序&#x2F;抛异常等，然后重新尝试分配</p><pre><code>void* operator new(std::size_t size) {    if (size == 0) size = 1;    while (true) {        if (void* p = std::malloc(size)) {            return p;        }        std::new_handler handler = std::get_new_handler();        if (!handler) {            throw std::bad_alloc();        }        handler();  // 可能释放内存或终止    }}</code></pre></li><li><p><strong>处理继承下的operator new。</strong> 类专属的静态operator new默认会被派生类继承使用，但是其往往只是适用于当前类，因此必须在分配内存前先检查size大小是否和当前类类型大小相同，如果不同，则交给默认的全局operator new处理。</p><pre><code>void* Base::operator new(std::size_t size) {    if (size != sizeof(Base))        return ::operator new(size);  // 交给全局 new    // 否则：走 Base 专属逻辑}</code></pre></li></ul><p><strong>相对的，只要我们自定义了operator new，就必须提供对应的operator delete，否则在构造失败的路径下会导致未定义行为，如下面代码所示：</strong></p><pre><code>class Widget {public:    static void* operator new(std::size_t size) {        // 自定义分配    }    static void operator delete(void* p) noexcept {        // 对应释放    }    //placement new 版本    static void* operator new(std::size_t size, MemoryPool&amp; pool) {        return pool.allocate(size);    }    static void operator delete(void* p, MemoryPool&amp; pool) {        pool.deallocate(p);    }};</code></pre><p>这是因为，我们在new创建对象时，<strong>如果构造函数抛出异常，会选择调用对应参数版本的operator delete来回收内存</strong>，但是如果找不到相应版本的operator delete，则会回退到全局的operator delete。这就会出问题：new使用的是自定义的策略，而delete使用的却是标准的释放，<strong>分配和释放机制并不匹配</strong>，可能导致内存泄露、破坏</p><pre><code>void* raw = Widget::operator new(sizeof(Widget)); // 成功try {    new (raw) Widget();                           // 构造失败 ❌} catch (...) {    Widget::operator delete(raw);                 // ❗回收内存    throw;}</code></pre><p><strong>那如何写一个正确的operator delete呢？</strong></p><p>其需要注意的类似，一是要正确处理删除空指针，直接return即可；二是同样要检查size大小，防止大小错误的删除</p><pre><code>class Base {        //一如以往，但此刻重点在 operator deletepublic:    static void* operator new(std::size_t size) throw(std::bad_alloc);    static void operator delete(void* rawMemory, std::size_t size) throw();    ...};void Base::operator delete(void* rawMemory, std::size_t size) throw(){    if (rawMemory == 0) return;           //检查 null 指针。    if (size != sizeof(Base)) {           //如果大小错误，令标准版        ::operator delete(rawMemory);     //operator delete 处理此一申请。        return;    }    //现在，归还 rawMemory 所指的内存；    return;}</code></pre><h1 id="placement-new表达式"><a href="#placement-new表达式" class="headerlink" title="placement new表达式"></a>placement new表达式</h1><p>【new、placement new、operator new(size_t, void*)重载之间的关系是什么？】</p><p><strong>new表达式、placement new表达式更像是一种“语法糖”，而operator new重载是底层实现。new和placement new在语法上都是new表达式，不是相互独立的两种语法，编译器生成的代码结构类似，区别在于二者调用到的operator new重载版本不同，进而影响到在构造异常时调用到的opeartor delete版本及其回滚行为。</strong></p><blockquote><p>C++标准：如果内存分配成功但对象构造失败（构造函数抛出异常），且存在与 placement new 参数匹配的 placement delete 函数，那么<strong>编译器应该调用这个 placement delete</strong>​ 来释放内存。</p></blockquote><p><strong>再本质一些，对于普通的new具有资源所有权，由C++保证自动回滚；而placement new需要用户自主决定所有权和回滚行为</strong></p><pre><code>// 二者共同的伪代码void* mem = operator new(...); //调用到的operator new 版本不同try {    construct(mem); //都会构造} catch (...) {    operator delete(...); //构造失败时调用对应的operator delete回滚    throw;}</code></pre><p>具体来说，二者的区别在于：</p><ul><li><p><strong>调用的operator new重载版本不同。</strong> new表达式调用的版本是 operator new(std::size_t size)，其回调用malloc进行内存分配，具体原理见“new底层原理”；<em><em>而默认placement new表达式调用的重载版本是 operator new(std::size_t, void</em> __p)，其只是单纯地返回指针，不会分配内存，不会调用new-handler，不会抛异常。</em>* （当然，也可以调用你自定义的placement operator new版本，以上讨论都是针对C++默认提供的默认版本的placement new）</p><pre><code>// placement new底层调用到的operator new重载，实现简化为：void* operator new(std::size_t, void* ptr) noexcept {    return ptr;  // 只是原样返回指针，不做任何处理！}</code></pre><p>二者实际上都是C++在全局作用于下提供的operator new重载版本</p><pre><code>void* operator new(std::size_t) throw(std::bad_alloc); //normal new.void* operator new(std::size_t, void*) throw();   //placement new.void* operator new(std::size_t,                   //nothrow new.                   const std::nothrow_t&amp;) throw(); </code></pre></li><li><p><strong>异常处理机制不同。</strong> new表达式会调用构造函数，在构造函数抛出异常时，会通过try-catch捕获并通过operator delete释放new表达式通过operator new(std::size_t size)申请的内存，自动完成回滚，防止内存泄露</p><p>而<strong>placement new表达式在面对构造函数抛出异常时，不会做任何事，因为这块内存根本不是它分配的，其不拥有该资源的所有权，所以C++提供相匹配的operator delete重载函数中没有做任何事，需要由用户完成资源的释放。</strong> 换句话说，如果placement new的构造出现了异常，需要用户手动兜底</p></li></ul><p><mark>我们该如何使用？</mark></p><p><strong>基本语法</strong>：new (address) Type (initializer-list) address必须是一个指针，initializer-list是类型的初始化列表</p><pre><code>void* memory = operator new(sizeof(MyClass)); // 1.分配原始内存 MyClass* obj = new (memory) MyClass(/* 构造函数参数 */);  // 2.在指定内存构造对象</code></pre><p><strong>使用注意点</strong>：</p><p><mark>placement new构造出来的对象，其析构与内存释放必须由用户自己负责，而不能直接delete，以保证内存来源和释放相匹配</mark></p><p>从内存管理的角度来说，因为placement new，T* obj &#x3D; new(buffer) T()所初始化的内存，其可能来自于栈、堆、文件和匿名映射区或是内存池中，即可能对应了不同的operator new来分配内存，而delete无法泛化处理，需要我们手动调用析构，让分配内存的operator new和释放内存的operator delete相匹配</p><p>从语义上来说，由于不是通过普通new表达式创建的对象，而是通过operator new(size_t)首先分配内存，再通过placement new表达式调用operator new(size_t, void*)+构造函数来初始化，则<strong>代表了需要将“内存管理”和“对象生命周期管理”分离</strong>，所以不能直接delete，因为delete的底层实现类似析构+调用对应版本的operator delete，又将“内存管理”和“对象生命周期管理”耦合在了一起，属于未定义行为。</p><pre><code>if (obj != nullptr){    obj-&gt;~MyClass();      // 析构    operator delete(obj); // 释放内存}</code></pre><p>尽管有些场景下混搭使用不会出现问题，比如以下场景，3和4可以合为delete(buffer)。但这种行为的性质就像malloc&#x2F;delete或new&#x2F;free混搭一样，也许不会内存泄露，可依旧属于未定义行为</p><pre><code>int main() {    // 1. 在堆上分配原始内存（未构造）    void* buffer = operator new(sizeof(MyClass));    // 2. placement new 构造对象    MyClass* obj = new (buffer) MyClass(42);    // 3. 手动调用析构函数    obj-&gt;~MyClass();    // 4. 手动释放内存    operator delete(buffer);}</code></pre><p>比如以下场景：对于MyClass类，其分配内存优先从内存池中分配内存，归还内存也要归还到内存池中</p><pre><code>class MemoryPool{public:    static inline char pool[1024];    static inline bool used = false;    static void* Allocate(size_t size)    {        //从内存池中分配    }    static void Free(void* ptr)    {        //归还到内存池    }};class MyClass{public:    int x;    MyClass(int v)        : x(v){}    // 普通new走对象池    static void* operator new(size_t size)    {        return MemoryPool::Allocate(size);    }    static void operator delete(void* ptr)    {        MemoryPool::Free(ptr);    }};</code></pre><p>如果我要求某次对象的构造不从对象池分配，而是从全局的堆内存中分配，即调用全局的operator new来分配内存，并通过placement new对其初始化，如果直接使用delete就会导致将全局的堆内存归还到内存池中，出现错误。因为此时delete调用的operator delete是MyClass类中的operator delete，而没有调用到和全局operator new相匹配的operator delete。</p><pre><code>int main(){    // 调用全局的operator new，而不是类中的，会外部分配原始内存    void* buffer = ::operator new(sizeof(MyClass));    // placement new    MyClass* obj = new(buffer) MyClass(42);    // 错误！    delete obj;}</code></pre><p>正确的做法是析构+全局::operator delete，必须让operator new和operator delete配对使用，而不是使用默认的delete</p><p><strong>如果正确地自定义实现placement new表达式？</strong></p><p>实际上，其和“写一个正确的operator new”的行为是一致的，因为本质上都是在写operator new的重载，只不过说的placement new重载，一般都不会在operator new中分配内存，也不会在operator delete中释放内存</p><ul><li><p><strong>placement new和placement delete必须成对设计。</strong> 换句话说，如果提供了operator new(A, B, C)版本的重载，那么也必须提供对应的operator delete(A, B, C)版本的重载，以保证在构造函数抛异常时可以被正确回滚，防止资源泄漏。</p></li><li><p><strong>在类内重载operator new时，需要避免遮盖了正常版本的operator new。</strong> 正确的方法是，创建一个基类，包含所有C++默认提供的operator new，并让需要自定义operator new的类继承该基类</p><pre><code>class StandardNewDeleteForms {public:    // normal new/delete    static void* operator new(std::size_t size) throw(std::bad_alloc)    { return ::operator new(size); }    static void operator delete(void* pMemory) throw()    { ::operator delete(pMemory); }    // placement new/delete    static void* operator new(std::size_t size, void* ptr) throw()    { return ::operator new(size, ptr); }    static void operator delete(void* pMemory, void* ptr) throw()    { return ::operator delete(pMemory, ptr); }    // nothrow new/delete    static void* operator new(std::size_t size, const std::nothrow_t&amp; nt) throw()    { return ::operator new(size, nt); }    static void operator delete(void *pMemory, const std::nothrow_t&amp;) throw()    { ::operator delete(pMemory); }};class Widget: public StandardNewDeleteForms {             //继承标准形式public:    using StandardNewDeleteForms::operator new;           //让这些形式可见    using StandardNewDeleteForms::operator delete;    static void* operator new(std::size_t size,            //添加一个自定的                              std::ostream&amp; logStream)     //placement new    throw(std::bad_alloc);    static void operator delete(void* pMemory,             //添加一个对应的                                std::ostream&amp; logStream)    //placement delete    throw();    ...};</code></pre></li></ul><p><strong>placement new的应用场景？</strong></p><p>一般应用在自定义的内存池——避免频繁地调用malloc&#x2F;free，重复利用同一块内存区域；STL allocator容器的底层实现，consructor函数的本质就是placement new，支持延迟构造，比如vector支持reserve来提前分配内存而不初始化</p><h1 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h1><p>从malloc的底层机制到new的面向对象封装，我们看到了C++在内存管理哲学上的重大演进。new&#x2F;delete不仅是简单的语法糖，更是C++面向对象核心思想的体现——将内存分配与对象生命周期管理绑定，为RAII和异常安全提供基础支持。<br>对于大多数场景，直接使用new&#x2F;delete（或智能指针）是最安全的选择；但在需要极致性能或特殊内存管理的场合，理解如何正确重载operator new、使用placement new等技术<br>在后续的文章中，我们将继续探索内存管理的更多话题——智能指针、移动语义等机制如何优化对象生命周期管理</p>]]></content>
+      
+      
+      <categories>
+          
+          <category> 内存分配与管理 </category>
+          
+      </categories>
+      
+      
+    </entry>
+    
+    
+    
+    <entry>
       <title>【内存分配与管理】关于堆、栈的思考</title>
       <link href="/posts/0.html"/>
       <url>/posts/0.html</url>
@@ -64,33 +83,22 @@
     
     
     <entry>
-      <title>友链</title>
-      <link href="/link/index.html"/>
-      <url>/link/index.html</url>
-      
-        <content type="html"><![CDATA[]]></content>
-      
-    </entry>
-    
-    
-    
-    <entry>
-      <title>categories</title>
-      <link href="/categories/index.html"/>
-      <url>/categories/index.html</url>
-      
-        <content type="html"><![CDATA[]]></content>
-      
-    </entry>
-    
-    
-    
-    <entry>
       <title></title>
       <link href="/css/custom.css"/>
       <url>/css/custom.css</url>
       
         <content type="html"><![CDATA[/* 页脚与头图透明 */#footer {  background: transparent !important;}#page-header {  background: transparent !important;}/* 白天模式遮罩透明 */#footer::before {  background: transparent !important;}#page-header::before {  background: transparent !important;}/* 夜间模式遮罩透明 */[data-theme="dark"] #footer::before {  background: transparent !important;}[data-theme="dark"] #page-header::before {  background: transparent !important;}]]></content>
+      
+    </entry>
+    
+    
+    
+    <entry>
+      <title>友链</title>
+      <link href="/link/index.html"/>
+      <url>/link/index.html</url>
+      
+        <content type="html"><![CDATA[]]></content>
       
     </entry>
     
@@ -122,6 +130,17 @@
       <title>第一个标签</title>
       <link href="/tags/tags.html"/>
       <url>/tags/tags.html</url>
+      
+        <content type="html"><![CDATA[]]></content>
+      
+    </entry>
+    
+    
+    
+    <entry>
+      <title>categories</title>
+      <link href="/categories/index.html"/>
+      <url>/categories/index.html</url>
       
         <content type="html"><![CDATA[]]></content>
       
