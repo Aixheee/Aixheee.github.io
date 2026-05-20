@@ -4,6 +4,25 @@
   
     
     <entry>
+      <title>【内存分配与管理】从值语义出发，理解C++内存管理设计逻辑</title>
+      <link href="/posts/0.html"/>
+      <url>/posts/0.html</url>
+      
+        <content type="html"><![CDATA[<p>在具体展开C++内存管理之前，本篇文章将从值语义这一C++设计基石出发，理解C++内存管理的根因缘由。你将明白为什么C++选择这条看似复杂但极致高效的道路，以及这种选择如何深刻影响着从对象生命周期到智能指针设计的每一个角落。</p><h1 id="值语义与C"><a href="#值语义与C" class="headerlink" title="值语义与C++"></a>值语义与C++</h1><p><strong>值语义</strong>是指对象的复制会创建一个独立的副本，每个副本都有自己的数据，修改一个副本不会影响其他副本。简单来说，值语义对象就像是数学中的数值，彼此独立，互不干扰。相对的，<strong>引用语义</strong>指的是对象不直接存储数据，而是持有对数据的引用（指针、引用等），多个对象可以共享相同的数据，修改其中一个会影响其他所有共享该数据的对象。</p><p>C++的设计初衷是让用户定义的类型（class）可以像内置类型一样工作，具有同等的地位，让class本质上是值语义</p><blockquote><p>Bjarne Stroustrup在《C++语言的设计与演化》中多次强调这一点：</p><p>“在C++中，用户定义类型应与内置类型具有相同的支持、相同的语法使用方式和相同的效率。”</p><p>“让用户定义的类型与内置类型一样工作良好的目标，是C++抽象机制设计的中心思想。”</p><p>“C++的类机制允许程序员定义与内置类型在使用方式、行为复杂性和效率方面都难以区分的类型……<strong>这是我设计C++的主要目标</strong>：提供一种工具，使得出色的抽象能够以内置类型一样的代价被使用。”</p><p>                                        ——《What is “Object-Oriented Programming”?》</p></blockquote><p><strong>为什么C++要这样设计？</strong></p><p>C++的诞生背景直接决定了这一点，其是在C语言的基础上进行开发的，而C语言天然就是值语义。当然，这里不是说是特地为了兼容C所以才要保留值语义，而是因为C++和C都在追求高性能，值语义恰恰可以满足这一点，且不止满足这一点——值语义的对象可像内置类型一样，直接分配在栈上，而分配在栈上带来了很多好处：</p><ul><li><p>栈的内存的分配&#x2F;释放都是基于移动栈指针完成的，其效率较高</p></li><li><p>栈在内存上是连续的，不需要指针跳转，可以减少间接访问，提高缓存命中率；</p></li><li><p>栈基于局部作用域来管理对象的生命周期，这让内存泄露可能性降低，并可明确地管理对象的生命周期（而不是像GC一样）</p></li></ul><p>我们似乎体会不到”class本质上就是值语义“这一点，但其实际上无处不在，C++设计的背后也为实现这一点做出了大量努力，甚至可以说大量的C++独有的“特性”都和这一点有关（这里的特性指的是，在C#&#x2F;Java这些语言下你从来不需要考虑的内容）：</p><ul><li><p>C++一直在追求的零开销抽象：class作为值语义对象，其不应该有额外的开销；而C#class对象是引用语义通常需要额外的GC信息，具有额外的开销</p><pre><code>class A{    int x;};sizeof(A) == sizeof(int)</code></pre></li><li><p>class对象作为成员时会直接嵌入</p></li><li><p>class的成员的初始化：class成员默认不会初始化，比如值语义的int从来都是未初始化的；C# class对象则是默认初始化的</p></li><li><p>拷贝构造和拷贝赋值：class对象作为值语义对象，必须支持拷贝，所以C++必须定义”class如何复制“，为我们生成默认按照值语义来进行拷贝的成员函数，也就是常说的”浅拷贝“。但是有些class并不符合值语义的要求，比如File、thraed、socket、mutex等资源（这一点下面再具体展开），如果class中存在这些成员，那么就不能按照值语义来拷贝，而是需要我们自定义规则，即Rule of 5，甚至有的时候都不应该支持拷贝，即 &#x3D;delete。而C#中的class是引用语义，永远都是在复制引用（地址），而不是对象本身复制，所以完全不需要考虑这些东西，但是代价就是一切默认共享</p></li><li><p>传参时需要考虑pass-by-value还是pass-by-const-reference：因为值语义对象相互独立，所以拷贝后需要成为一个独立的对象，比如函数传参int时，永远都是拷贝。而如果class对象是一个大对象，那么可能需要通过pass-by-const-reference来避免复制；而C#的class对象是引用语义，天然避免该问题</p></li><li><p>函数返回值的RVO&#x2F;NRVO优化：同样的，因为值语义对象相互独立，所以对象拷贝后需要成为一个独立的对象，比如函数返回int时，永远都是拷贝。而如果class对象是一个大对象，那么需要相应的优化来尽可能避免这次不必要的拷贝；而C#的class对象是引用语义，天然避免该问题</p></li><li><p>继承会出现切片问题，并且多态必须使用引用&#x2F;指针：在C++中Base b &#x3D; d时，这是真的在创建一个新的Base对象，而不止是一个“访问句柄”，但Base对象的内容里只能存放Base部分，所以Derived部分会被裁掉，即切片问题。而如果Deirved部分被裁掉了，那么自然无法发挥多态的作用，所以C++多态必须用引用&#x2F;指针，Base&amp; b &#x3D; d; 没有创建新对象，只是引用了旧对象，Deirved部分仍然存在，多态才成立而C#中Base b &#x3D; new Derived()则是在让Base引用的指向Derived对象而已，对象本体仍然完整，不会发生切割，也就不需要有引用&#x2F;指针才能使用多态的要求</p><pre><code>class Base{    int a;};class Derived : public Base{    int b;};Derived d;Base b = d;</code></pre></li></ul><h1 id="值语义下的问题"><a href="#值语义下的问题" class="headerlink" title="值语义下的问题"></a>值语义下的问题</h1><p>将class作为值语义固然高效，但实际上会有问题。</p><p>回顾一下值语义的定义：值语义对象的复制会创建一个独立的副本，每个副本都有自己的数据，修改一个副本不会影响其他副本。由于需要独立的副本，那么必然要发生拷贝，<strong>那什么class对象的拷贝才是是合理的？拷贝的开销会不会过大呢？</strong> 这两点直接导致C++复杂度增大。</p><h2 id="问题一：值语义的合理性"><a href="#问题一：值语义的合理性" class="headerlink" title="问题一：值语义的合理性"></a>问题一：值语义的合理性</h2><p>对于第一个问题：并不是所有class都能够按照值语义来解释。比如thread线程，难道拷贝一个thread可以让操作系统增加一个一模一样的线程吗？再比如，一个socket链接，难道拷贝一个socket可以让操作系统再增加一条网络连接吗？类似的例子还有很多，比如file、mutex以及内存资源等。</p><p>于是，C++需要引用语义来描述这些具有唯一实体的class——其不允许复制，多个地方需要通过指针&#x2F;引用作为“句柄”来<strong>共享访问</strong>。而这就意味着这些引用语义的对象需要分配在堆上。而堆上对象特点是，生命周期不受约束、内存布局不受约束，即在时间和空间上都是自由的，其自由背后的代价是，内存分配涉及到系统调用，<strong>分配和释放成本较高</strong>；由于生命周期不受控制，所以可能发生<strong>内存泄露</strong>的问题，并存在内存碎片的问题。</p><p>那为什么引用语义的对象需要分配在堆上呢？这两个缺点C++又是怎么尽可能避免的呢？</p><p>先来回答前者：<strong>这里就引出了一个经典的问题：为什么值语义对象默认在栈上，引用语义对象默认在堆上？</strong> 这是因为，引用语义对象的需要被多处共享，对象需要支持跨作用域存在。比如下面这个例子，tex如果分配在栈上，那么随着作用域的结束，tex的生命周期结束，无法被其他对象共享；而如果tex分配在堆上，则不会再受到作用域的限制。</p><pre><code>Texture* Create(){    Texture tex;    return &amp;tex;}</code></pre><p><strong>总的来说，之所以引用语义对象分配在堆上，是因为栈无法支持这种跨作用生命周期的需求，所以往往借助堆分配来获得独立生命周期。而对于值语义对象来说，其并不需要被共享，也就没有这层限制，其既可以分配在栈上，也可以分配在堆上，而栈的效率更高且生命周期管理更简单，所以默认分配在栈上。值语义引用语义和栈堆分配之间没有必然关系，其实际上是由生命周期管理、效率等各方面需求决定的</strong></p><p>对于后者，缺点之一为———堆内存分配&#x2F;释放成本较高的问题，则需要通过allocator来对堆内存的分配进行优化，比如STL allocator、ptmalloc等，一是在时间上提高分配&#x2F;释放时的效率，减少锁竞争，并尽可能地提高缓存局部性，二是在空间上提高利用率，减少内存碎片问题。ptmalloc的设计已在前几篇文章中展开，对于STL allocator会在后续文章中讲解</p><p>缺点之二为——堆上资源（不止是内存，还有File、thread、socket、mutex等资源）复杂的生命周期问题。其是C++必须投入大量设计精力解决的部分，也是平时我们写代码时直接接触到的</p><p>引用语义相比于值语义：值语义不存在共享对象的概念，资源对象只属于该class自己，对象被分配在栈上，作用域结束，对象生命周期结束，资源对象的生命周期也结束，资源被回收，万事大吉。这十分便捷，就像你从来不会关心一个int变量的生命周期一样，而这实际上就是RAII——将资源的生命周期和对象的生命周期绑定</p><pre><code>void Func(){    std::string s = &quot;abc&quot;;}</code></pre><p><strong>而引用语义下不一样，由于对象被共享，所以此时对象的生命周期不再简单地跟着作用域走，而是取决于最后一个使用它的class。</strong> 为此，我们需要额外考虑许多问题：对于一个裸指针&#x2F;引用，其指向的资源对象什么时候释放？被谁释放？是否是共享的？而由于这些问题的存在，所以才出现了资源泄露（我以为其他class负责释放资源，所以我不释放，结果没有任何一个class释放资源）、悬空指针（我明明还在访问该资源，其他class却给释放了）、double free（我以为其他class都不会释放该资源，所以我来释放，结果其他class同样也释放了）、循环引用等等问题。</p><pre><code>TcpConnection* conn = Create();ModuleA(conn);ModuleB(conn);ModuleC(conn);</code></pre><p><strong>而解决这些问题的根源，便是明确规定一个资源到底由谁来管理，即确定资源的所有权。</strong> 而最简单的资源所有权模型，便是unique_ptr，其明确了该资源对象只由该智能指针对象来管理，将资源包装进值对象中。比如下面的例子，一离开作用域则自动delete，RAII便又回来了。这可以说是上C++最重要的思想之一，比如vector、string、lock_guard等等都遵循该规则</p><pre><code>{    std::unique_ptr&lt;Texture&gt; tex = Load();}</code></pre><p>再比如，让类成员unique_ptr持有资源，明确该资源只属于该类对象，不需要被其他对象共享，从而保证资源的正确释放</p><pre><code>class TextureManager{   std::unique_ptr&lt;Texture&gt; textures;};</code></pre><p>既然提到了unique_ptr，那么不得不再说说shared_ptr：程序中确实存在资源对象需要被共享的情况，比如纹理资源、场景资源等，所以需要shared_ptr，其通过引用计数的方式<strong>尽可能</strong>地保证资源的正确释放。</p><p>但其缺点在于，资源的释放时机不再确定，需要额外的内存空间用于存储控制块，并且存在循环引用，在动态环的场景下束手无策，只能通过类似于GC的思路来解决。这也是为什么推荐优先使用unique_ptr。</p><p><strong>此外，通过以上方式来明确资源所有权的另一个好处在于提高代码的可读性——你完全可以通过局部代码来推导出谁负责管理资源，而这实际上间接地防止了资源泄漏问题。</strong></p><p>考虑这样一个函数，在多人协作的场景下，如果你不去看该函数的具体实现，你完全没法判断这个函数会完全接管obj并负责删除释放它，还是只是读取&#x2F;修改资源，容易导致资源泄露或是double free。这个问题的根源同样是资源所有权——MyObj*无法体现出所有权关系</p><pre><code>void Process(MyObj* obj)</code></pre><p>而在有了智能指针后，完全可以通过其来显示地传递所有权信息——unique_ptr&#x2F;shared_ptr代表我（站在函数的角度）拥有资源的所有权，负责其生命周期，即“拥有者”；</p><pre><code>void Process(std::unique_ptr&lt;MyObj&gt; obj)</code></pre><p>T*&#x2F;T&amp;&#x2F;const T&amp;代表我只是临时访问、修改该对象，但是不负责管理其生命周期，即“借用者”，需要外界来管理其生命周期；weak_ptr同样也是代表访问、修改该对象，且不影响其生命周期，但是其和指针&#x2F;引用的区别在于，weak_ptr可以感知到资源对象是否被释放了（lock()），而指针&#x2F;引用无法感知，其默认资源对象始终有效，完全依赖于外部来保证在调用期间该资源对象不会被释放</p><p>以上是引用语义的问题之一——资源所有权不确定导致的资源生命周期的复杂性。<strong>引用语义的另一个问题，更准确说是特点，是引用语义的对象需要分配在堆上，而分配在堆上就导致了效率的降低。这里的效率，即是缓存局部性导致的访问效率降低，也是分配&#x2F;释放对象时的效率降低。</strong></p><h2 id="问题二：值语义的拷贝代价"><a href="#问题二：值语义的拷贝代价" class="headerlink" title="问题二：值语义的拷贝代价"></a>问题二：值语义的拷贝代价</h2><p><strong>现在，让我们来看看之前提到的第二个问题——值语义所带来的拷贝开销问题。</strong></p><p>为了解决该问题，编译器首先出现了RVO&#x2F;NRVO优化，并在C++17之后RVO被规定为强制优化。RVO&#x2F;NRVO即直接将返回值对象在目标位置上构造，而不需要中间临时对象的参与，减少不必要的拷贝。这使得我们既能够返回值保留值语义，又能有效降低拷贝开销。</p><pre><code>MyClass Func(){    MyClass obj;    return obj;}</code></pre><p>而对于传参时的拷贝代价，则通过引入了移动语义来解决。move的本质是将资源的所有权直接转移，避免了class对象被复制。这个过程中，move依然属于值语义，因为该class对象中的资源对象依然只有一个所有者，只不过所有权被转移了</p><p>而为了能够让move移动语义成立，从而引入了右值引用、万能引用、完美转发等一系列机制，这里不再详细说明它们的底层机制以及彼此间的逻辑关系，后续文章再具体展开</p><h1 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h1><p>总结一下，C++追求class作为值语义对象，其有很多优点，但是现实情况下并不是所有对象都能简单地复制、按照值语义的方式来理解，所以需要引用语义。但是引用语义带来了生命周期的复杂性，资源对象的释放不再简单由作用域决定，而是由引用关系决定，从而出现了资源泄漏等各种问题。而C++便通过资源所有权来解决该问题，产生了unique_ptr&#x2F;shared_ptr等机制，重新通过RAII的思路来管理资源对象。而对于堆分配的缺点，则采用了allocator策略在事件和空间上尽可能地优化。现代C++所有的努力，本质上都是在保证值语义，这也是C++的核心目标之一，其带来了优秀的缓存局部性、确定性的资源管理和较低的运行时开销，但是也引入了复杂的生命周期管理问题以及拷贝问题</p><p>那C#呢？C#的目标是提高开发效率，尽可能降低内存管理的复杂度，所以选择了默认引用语义并通过GC自动追踪引用，大大降低了开发难度，不需要再考虑引用语义下生命周期的问题，但其局部缓存性较差，且GC带来了不确定的析构、运行时较大的额外开销。并且实际上，GC只解决了内存资源的管理，而对于其他资源，C#依然采取了类似于RAII的解决思路，比如using IDisposable等</p><pre><code>using(var file = ...){}</code></pre><p>理解这套哲学，就理解了为什么C++没有选择Java&#x2F;C#那样的“简单”引用语义+GC模型。C++的设计者相信，程序员应该有权在“自动化的便利”和“手动的控制”之间找到最佳平衡点。这种选择让C++变得更复杂，但也让它能够在性能敏感的领域大放异彩。在后续的系列文章中，我们将具体展开C++的内存管理方式。</p>]]></content>
+      
+      
+      <categories>
+          
+          <category> 内存分配与管理 </category>
+          
+      </categories>
+      
+      
+    </entry>
+    
+    
+    
+    <entry>
       <title>【内存分配与管理】理解new与placement new</title>
       <link href="/posts/0.html"/>
       <url>/posts/0.html</url>
@@ -83,11 +102,11 @@
     
     
     <entry>
-      <title></title>
-      <link href="/css/custom.css"/>
-      <url>/css/custom.css</url>
+      <title>关于</title>
+      <link href="/about/index.html"/>
+      <url>/about/index.html</url>
       
-        <content type="html"><![CDATA[/* 页脚与头图透明 */#footer {  background: transparent !important;}#page-header {  background: transparent !important;}/* 白天模式遮罩透明 */#footer::before {  background: transparent !important;}#page-header::before {  background: transparent !important;}/* 夜间模式遮罩透明 */[data-theme="dark"] #footer::before {  background: transparent !important;}[data-theme="dark"] #page-header::before {  background: transparent !important;}]]></content>
+        <content type="html"><![CDATA[]]></content>
       
     </entry>
     
@@ -116,11 +135,22 @@
     
     
     <entry>
-      <title>关于</title>
-      <link href="/about/index.html"/>
-      <url>/about/index.html</url>
+      <title>categories</title>
+      <link href="/categories/index.html"/>
+      <url>/categories/index.html</url>
       
         <content type="html"><![CDATA[]]></content>
+      
+    </entry>
+    
+    
+    
+    <entry>
+      <title></title>
+      <link href="/css/custom.css"/>
+      <url>/css/custom.css</url>
+      
+        <content type="html"><![CDATA[/* 页脚与头图透明 */#footer {  background: transparent !important;}#page-header {  background: transparent !important;}/* 白天模式遮罩透明 */#footer::before {  background: transparent !important;}#page-header::before {  background: transparent !important;}/* 夜间模式遮罩透明 */[data-theme="dark"] #footer::before {  background: transparent !important;}[data-theme="dark"] #page-header::before {  background: transparent !important;}]]></content>
       
     </entry>
     
@@ -130,17 +160,6 @@
       <title>第一个标签</title>
       <link href="/tags/tags.html"/>
       <url>/tags/tags.html</url>
-      
-        <content type="html"><![CDATA[]]></content>
-      
-    </entry>
-    
-    
-    
-    <entry>
-      <title>categories</title>
-      <link href="/categories/index.html"/>
-      <url>/categories/index.html</url>
       
         <content type="html"><![CDATA[]]></content>
       
