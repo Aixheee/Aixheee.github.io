@@ -1,0 +1,471 @@
+<!DOCTYPE html><html lang="zh-CN" data-theme="light"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0,viewport-fit=cover"><title>【内存分配与管理】Unity 增量式GC | Aixheee`Blog</title><meta name="author" content="Aixheee"><meta name="copyright" content="Aixheee"><meta name="format-detection" content="telephone=no"><meta name="theme-color" content="#ffffff"><meta name="description" content="在上一篇文章中，我们深入剖析了 Unity 传统 Boehm GC 的完整工作机制——从触发条件、STW（Stop-The-World）线程暂停，到 Mark 阶段的递归可达性分析，再到 Sweep 阶段的分级回收策略。我们看到了保守式 GC 在设计与实现上的诸多权衡：无法整理内存、无法精确区分指针与数据、依赖全局扫描来完成回收。这些特性使得传统 GC 在一次回收中往往带来不可忽视的卡顿，尤其是在">
+<meta property="og:type" content="article">
+<meta property="og:title" content="【内存分配与管理】Unity 增量式GC">
+<meta property="og:url" content="http://www.aixheee.top/posts/UnityGC_2.html">
+<meta property="og:site_name" content="Aixheee&#96;Blog">
+<meta property="og:description" content="在上一篇文章中，我们深入剖析了 Unity 传统 Boehm GC 的完整工作机制——从触发条件、STW（Stop-The-World）线程暂停，到 Mark 阶段的递归可达性分析，再到 Sweep 阶段的分级回收策略。我们看到了保守式 GC 在设计与实现上的诸多权衡：无法整理内存、无法精确区分指针与数据、依赖全局扫描来完成回收。这些特性使得传统 GC 在一次回收中往往带来不可忽视的卡顿，尤其是在">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="http://www.aixheee.top/img/avatar.jpg">
+<meta property="article:published_time" content="2026-06-02T16:00:00.000Z">
+<meta property="article:modified_time" content="2026-06-02T16:00:00.000Z">
+<meta property="article:author" content="Aixheee">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="http://www.aixheee.top/img/avatar.jpg"><script type="application/ld+json">{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "【内存分配与管理】Unity 增量式GC",
+  "url": "http://www.aixheee.top/posts/UnityGC_2.html",
+  "image": "http://www.aixheee.top/img/avatar.jpg",
+  "datePublished": "2026-06-02T16:00:00.000Z",
+  "dateModified": "2026-06-02T16:00:00.000Z",
+  "author": [
+    {
+      "@type": "Person",
+      "name": "Aixheee",
+      "url": "http://www.aixheee.top"
+    }
+  ]
+}</script><link rel="shortcut icon" href="/img/fav.png"><link rel="canonical" href="http://www.aixheee.top/posts/UnityGC_2.html"><link rel="preconnect" href="//cdn.jsdelivr.net"/><link rel="preconnect" href="//busuanzi.ibruce.info"/><link rel="stylesheet" href="/css/index.css?v=5.5.4"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7.1.0/css/all.min.css"><script>
+    (() => {
+      
+    const saveToLocal = {
+      set: (key, value, ttl) => {
+        if (!ttl) return
+        const expiry = Date.now() + ttl * 86400000
+        localStorage.setItem(key, JSON.stringify({ value, expiry }))
+      },
+      get: key => {
+        const itemStr = localStorage.getItem(key)
+        if (!itemStr) return undefined
+        const { value, expiry } = JSON.parse(itemStr)
+        if (Date.now() > expiry) {
+          localStorage.removeItem(key)
+          return undefined
+        }
+        return value
+      }
+    }
+
+    window.btf = {
+      saveToLocal,
+      getScript: (url, attr = {}) => new Promise((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = url
+        script.async = true
+        Object.entries(attr).forEach(([key, val]) => script.setAttribute(key, val))
+        script.onload = script.onreadystatechange = () => {
+          if (!script.readyState || /loaded|complete/.test(script.readyState)) resolve()
+        }
+        script.onerror = reject
+        document.head.appendChild(script)
+      }),
+      getCSS: (url, id) => new Promise((resolve, reject) => {
+        const link = document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = url
+        if (id) link.id = id
+        link.onload = link.onreadystatechange = () => {
+          if (!link.readyState || /loaded|complete/.test(link.readyState)) resolve()
+        }
+        link.onerror = reject
+        document.head.appendChild(link)
+      }),
+      addGlobalFn: (key, fn, name = false, parent = window) => {
+        if (!false && key.startsWith('pjax')) return
+        const globalFn = parent.globalFn || {}
+        globalFn[key] = globalFn[key] || {}
+        globalFn[key][name || Object.keys(globalFn[key]).length] = fn
+        parent.globalFn = globalFn
+      }
+    }
+  
+      
+      const activateDarkMode = () => {
+        document.documentElement.setAttribute('data-theme', 'dark')
+        if (document.querySelector('meta[name="theme-color"]') !== null) {
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#0d0d0d')
+        }
+      }
+      const activateLightMode = () => {
+        document.documentElement.setAttribute('data-theme', 'light')
+        if (document.querySelector('meta[name="theme-color"]') !== null) {
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff')
+        }
+      }
+
+      btf.activateDarkMode = activateDarkMode
+      btf.activateLightMode = activateLightMode
+
+      const theme = saveToLocal.get('theme')
+    
+          theme === 'dark' ? activateDarkMode() : theme === 'light' ? activateLightMode() : null
+        
+      
+      const asideStatus = saveToLocal.get('aside-status')
+      if (asideStatus !== undefined) {
+        document.documentElement.classList.toggle('hide-aside', asideStatus === 'hide')
+      }
+    
+      
+    const detectApple = () => {
+      if (/iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent)) {
+        document.documentElement.classList.add('apple')
+      }
+    }
+    detectApple()
+  
+    })()
+  </script><script>const GLOBAL_CONFIG = {
+  root: '/',
+  algolia: undefined,
+  localSearch: {"path":"/search.xml","preload":false,"top_n_per_article":1,"unescape":false,"pagination":{"enable":false,"hitsPerPage":8},"languages":{"hits_empty":"未找到符合您查询的内容：${query}","hits_stats":"共找到 ${hits} 篇文章"}},
+  translate: undefined,
+  highlight: {"plugin":"highlight.js","highlightCopy":true,"highlightLang":true,"highlightHeightLimit":230,"highlightFullpage":false,"highlightMacStyle":false},
+  copy: {
+    success: '复制成功',
+    error: '复制失败',
+    noSupport: '浏览器不支持'
+  },
+  relativeDate: {
+    homepage: false,
+    post: false
+  },
+  runtime: '',
+  dateSuffix: {
+    just: '刚刚',
+    min: '分钟前',
+    hour: '小时前',
+    day: '天前',
+    month: '个月前'
+  },
+  copyright: {"limitCount":100,"languages":{"author":"作者: Aixheee","link":"链接: ","source":"来源: Aixheee`Blog","info":"著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。"}},
+  lightbox: 'null',
+  Snackbar: undefined,
+  infinitegrid: {
+    js: 'https://cdn.jsdelivr.net/npm/@egjs/infinitegrid@4.13.0/dist/infinitegrid.min.js',
+    buttonText: '加载更多'
+  },
+  isPhotoFigcaption: false,
+  islazyloadPlugin: false,
+  isAnchor: false,
+  percent: {
+    toc: true,
+    rightside: false,
+  },
+  autoDarkmode: false
+}</script><script id="config-diff">var GLOBAL_CONFIG_SITE = {
+  title: '【内存分配与管理】Unity 增量式GC',
+  isHighlightShrink: false,
+  isToc: true,
+  pageType: 'post'
+}</script><link rel="stylesheet" href="/css/custom.css"><meta name="referrer" content="no-referrer"><style>
+  /* 隐藏分类卡片中的方框伪元素 */
+  .categoryBar-list-count::before {
+    display: none !important;
+  }
+  /* 如果还有其它方框，也一起隐藏 */
+  .category-bar-item::before,
+  .category-bar-item::after,
+  [class*="category"]::before {
+    display: none !important;
+  }
+</style>
+<!-- hexo injector head_end start --><link rel="stylesheet" href="https://npm.elemecdn.com/hexo-butterfly-categories-card@1.0.0/lib/categorybar.css"><!-- hexo injector head_end end --><meta name="generator" content="Hexo 8.1.1"></head><body><div class="bg-animation" id="web_bg" style="background-image: url(https://raw.githubusercontent.com/Aixheee/Aixheee.github.io/main/img/back.jpg);"></div><div id="sidebar"><div id="menu-mask"></div><div id="sidebar-menus"><div class="avatar-img text-center"><img src="/img/avatar.jpg" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="site-data text-center"><a href="/archives/"><div class="headline">文章</div><div class="length-num">13</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">3</div></a></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> 分类</span></a></div><div class="menus_item"><span class="site-page group"><i class="fa-fw fa fa-heartbeat"></i><span> 清单</span><i class="fas fa-chevron-down"></i></span><ul class="menus_item_child"><li><a class="site-page child" href="/music/"><i class="fa-fw fas fa-music"></i><span> 音乐</span></a></li><li><a class="site-page child" href="/Gallery/"><i class="fa-fw fas fa-images"></i><span> 照片</span></a></li><li><a class="site-page child" href="/movies/"><i class="fa-fw fas fa-video"></i><span> 电影</span></a></li></ul></div><div class="menus_item"><a class="site-page" href="/link/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heart"></i><span> 关于</span></a></div></div></div></div><div class="post" id="body-wrap"><header class="post-bg" id="page-header"><nav id="nav"><span id="blog-info"><a class="nav-site-title" href="/"><span class="site-name">Aixheee`Blog</span></a><a class="nav-page-title" href="/"><span class="site-name">【内存分配与管理】Unity 增量式GC</span><span class="site-name"><i class="fa-solid fa-circle-arrow-left"></i><span>  返回首页</span></span></a></span><div id="menus"><div id="search-button"><span class="site-page social-icon search"><i class="fas fa-search fa-fw"></i><span> 搜索</span></span></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> 分类</span></a></div><div class="menus_item"><span class="site-page group"><i class="fa-fw fa fa-heartbeat"></i><span> 清单</span><i class="fas fa-chevron-down"></i></span><ul class="menus_item_child"><li><a class="site-page child" href="/music/"><i class="fa-fw fas fa-music"></i><span> 音乐</span></a></li><li><a class="site-page child" href="/Gallery/"><i class="fa-fw fas fa-images"></i><span> 照片</span></a></li><li><a class="site-page child" href="/movies/"><i class="fa-fw fas fa-video"></i><span> 电影</span></a></li></ul></div><div class="menus_item"><a class="site-page" href="/link/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heart"></i><span> 关于</span></a></div></div><div id="toggle-menu"><span class="site-page"><i class="fas fa-bars fa-fw"></i></span></div></div></nav><div id="post-info"><h1 class="post-title">【内存分配与管理】Unity 增量式GC</h1><div id="post-meta"><div class="meta-firstline"><span class="post-meta-date"><i class="far fa-calendar-alt fa-fw post-meta-icon"></i><span class="post-meta-label">发表于</span><time class="post-meta-date-created" datetime="2026-06-02T16:00:00.000Z" title="发表于 2026-06-03 00:00:00">2026-06-03</time><span class="post-meta-separator">|</span><i class="fas fa-history fa-fw post-meta-icon"></i><span class="post-meta-label">更新于</span><time class="post-meta-date-updated" datetime="2026-06-02T16:00:00.000Z" title="更新于 2026-06-03 00:00:00">2026-06-03</time></span><span class="post-meta-categories"><span class="post-meta-separator">|</span><i class="fas fa-inbox fa-fw post-meta-icon"></i><a class="post-meta-categories" href="/categories/%E5%86%85%E5%AD%98%E5%88%86%E9%85%8D%E4%B8%8E%E7%AE%A1%E7%90%86/">内存分配与管理</a></span></div><div class="meta-secondline"><span class="post-meta-separator">|</span><span class="post-meta-pv-cv" id="" data-flag-title=""><i class="far fa-eye fa-fw post-meta-icon"></i><span class="post-meta-label">浏览量:</span><span id="busuanzi_value_page_pv"><i class="fa-solid fa-spinner fa-spin"></i></span></span></div></div></div></header><main class="layout" id="content-inner"><div id="post"><article class="container post-content" id="article-container"><p>在上一篇文章中，我们深入剖析了 Unity 传统 Boehm GC 的完整工作机制——从触发条件、STW（Stop-The-World）线程暂停，到 Mark 阶段的递归可达性分析，再到 Sweep 阶段的分级回收策略。我们看到了保守式 GC 在设计与实现上的诸多权衡：无法整理内存、无法精确区分指针与数据、依赖全局扫描来完成回收。这些特性使得传统 GC 在一次回收中往往带来不可忽视的卡顿，尤其是在托管堆较大、对象存活率较高的游戏场景下。</p>
+<p>然而，游戏对帧率稳定性的要求极为苛刻。一次 50ms 甚至 100ms 的主线程停顿，足以让玩家明显感知到“掉帧”或“卡一下”。为了解决这个问题，Unity 引入了增量式 GC（Incremental GC）。它并没有改变 Boehm GC 的基本算法，而是通过一种精巧的工程手段：将原本一次性完成的 Mark 阶段拆分成多个短时间的增量步骤，穿插在多帧中执行，从而把一次长时间的 STW 卡顿，转化为多次几乎不可感知的微停顿。</p>
+<p>增量式 GC 的核心挑战在于：如何在 GC 与用户线程并发运行的前提下，仍然保证标记结果的正确性？​ 答案就是本文要重点讲解的 Write Barrier（写屏障）机制，以及与之配套的 dirty page 跟踪、状态机驱动的增量标记流程</p>
+<h1 id="WriteBarrier"><a href="#WriteBarrier" class="headerlink" title="WriteBarrier"></a>WriteBarrier</h1><pre><code>// 赋值field1生成的il2cpp代码
+    __this-&gt;___field1 = (RuntimeObject*)L_4;
+    Il2CppCodeGenWriteBarrier((void**)(&amp;__this-&gt;___field1), (void*)(RuntimeObject*)L_4); // 调用WriteBarrier
+
+void Il2CppCodeGenWriteBarrier(void** targetAddress, void* object)
+{
+    il2cpp::gc::GarbageCollector::SetWriteBarrier(targetAddress);
+}
+
+il2cpp::gc::GarbageCollector::SetWriteBarrier(void **ptr)
+{
+    GC_END_STUBBORN_CHANGE(ptr);
+}
+
+GC_API void GC_CALL GC_end_stubborn_change(const void *p)
+{
+    GC_dirty(p); /* entire object */
+}
+</code></pre>
+<p>相较于普通GC，增量式GC引入了<strong>Write Barrier写屏障</strong>，在每次修改引用字段所引用的对象时，都会对该字段执行WriteBarrier代码，<strong>将被修改引用字段的对象所对应的hblk的dirty位设置为1，修改位置位于一个单独的GC_dirty_pages数组中，从而告诉增量GC——这个对象所在的内存区域的指针指向可能发生变化了，需要重新扫描</strong></p>
+<p><strong>为什么需要依赖于WriteBarrier？</strong></p>
+<p><strong>因为增量式GC和用户线程是并发的，GC期间用户线程依然有可能修改对象间的引用关系，而WriteBarrier负责记录”发生的引用变化“，从而保证Mark阶段扫描时，可对先前的扫描结果进行”更正补救“以符合当前最新的引用关系</strong></p>
+<p>而之所以普通GC&#x2F;full GC不需要依赖于WriteBarrier，是因为二者不会和用户线程并发执行，而是完全暂停用户线程后才进行mark-and-sweep，其扫描对象时获取的引用关系是实时最新的</p>
+<h1 id="触发回收"><a href="#触发回收" class="headerlink" title="触发回收"></a>触发回收</h1><p>在普通GC下，对于小对象的内存分配，只有在ok_freelist和GC_hblkfreelist中都没有空闲内存块的情况下，才有可能触发GC；而<strong>在增量GC下，只要ok_freelist中没有空闲内存块，则有可能直接触发GC，不需要管GC_hblkfreelist，而对于大内存的分配，每次都有可能触发GC。</strong></p>
+<p>具体来说，增量模式下判断是否触发GC的函数为GC_maybe_gc：</p>
+<pre><code>STATIC void GC_maybe_gc(void)
+{
+    if (GC_should_collect()) 
+    {
+        static int n_partial_gcs = 0;
+
+        if (!GC_incremental) 
+        {
+            ...
+        }
+        else 
+        {
+            if (GC_need_full_gc || n_partial_gcs &gt;= GC_full_freq) 
+            {
+                GC_COND_LOG_PRINTF(
+                    &quot;***&gt;Full mark for collection #%lu after %lu allocd bytes\n&quot;,
+                    (unsigned long)GC_gc_no + 1, (unsigned long)GC_bytes_allocd);
+
+                GC_promote_black_lists();
+                (void)GC_reclaim_all((GC_stop_func)0, TRUE);
+                GC_notify_full_gc();
+                GC_clear_marks();
+                n_partial_gcs = 0;
+                GC_is_full_gc = TRUE;
+            }
+            else 
+            {
+                n_partial_gcs++;
+            }
+        }
+
+        /* We try to mark with the world stopped.       */
+        /* If we run out of time, this turns into       */
+        /* incremental marking.                         */
+        if (GC_stopped_mark(GC_time_limit == GC_TIME_UNLIMITED ?
+            GC_never_stop_func : GC_timeout_stop_func)) 
+        {
+            GC_finish_collection();
+        }
+        else 
+        {
+            if (!GC_is_full_gc) 
+            {
+                /* Count this as the first attempt */
+                GC_n_attempts++;
+            }
+        }
+    }
+}
+</code></pre>
+<p>其主要逻辑同样是普通GC下调用的GC_should_collect，但是参数值略有不同：普通GC下其中的一个判断条件是——如果“自从上次GC到现在分配的内存”超过一个阈值，则触发GC，而在增量GC下，该阈值变为了原先的一半</p>
+<p>这意味着，触发增量GC的条件更加宽松了</p>
+<h1 id="状态转换"><a href="#状态转换" class="headerlink" title="状态转换"></a>状态转换</h1><pre><code>STATIC GC_bool GC_stopped_mark(GC_stop_func stop_func)
+{
+    ...
+    STOP_WORLD();
+    ...
+
+    GC_initiate_gc();
+
+    unsigned i;
+    for (i = 0;; i++) 
+    {
+        if ((*stop_func)()) 
+        {
+            GC_COND_LOG_PRINTF(&quot;Abandoned stopped marking after&quot;
+                &quot; %u iterations\n&quot;, i);
+            GC_deficit = i;     /* Give the mutator a chance.   */
+
+            START_WORLD();
+
+            return(FALSE);
+        }
+        if (GC_mark_some(GC_approx_sp())) break;
+    }
+    ...
+}
+</code></pre>
+<p>在确定了需要触发GC后，调用GC_stopped_mark会走以下流程：</p>
+<ul>
+<li><p>不会进行标记位清除：增量GC不会像普通GC一样在线程暂停前将hblk中所有的mark标志清空。</p>
+</li>
+<li><p>线程暂停：在增量GC下，单次GC的最长时间为3ms，如果耗时超过3ms，则会先停止回收，并让用户线程继续运行</p>
+</li>
+<li><p>收集dirty信息：调用GC_initiate_gc()来获取到自从上一次GC以来到现在的dirty标志并在本次GC中使用，以防在整个GC期间引用关系被修改，GC_dirty_pages再次发生变化。具体来说，GC_initiate_gc()会将GC_dirty_pages数组复制到一个相同规格的GC_grungy_pages数组中，并将GC_dirty_pages清空</p>
+</li>
+<li><p>进入GC_mark_some状态机，进行本次增量式GC的核心阶段</p>
+</li>
+</ul>
+<h2 id="MS-PUSH-RESCUERS"><a href="#MS-PUSH-RESCUERS" class="headerlink" title="MS_PUSH_RESCUERS"></a>MS_PUSH_RESCUERS</h2><p>在收集完成dirty信息后，状态由MS_NONE变为MS_PUSH_RESCUERS：</p>
+<p><strong>MS_PUSH_RESCUERS阶段的主要任务是”补救“，处理两次增量式GC之间用户线程发生的新变化，即处理dirty hblk和重新扫描root</strong></p>
+<pre><code>STATIC GC_bool GC_mark_some_inner(ptr_t cold_gc_frame)
+{
+    switch(GC_mark_state) {
+        case MS_NONE:
+            break;
+
+        case MS_PUSH_RESCUERS:
+            if ((word)GC_mark_stack_top
+                &gt;= (word)(GC_mark_stack_limit - INITIAL_MARK_STACK_SIZE/2)) 
+            {
+                /* Go ahead and mark, even though that might cause us to */
+                /* see more marked dirty objects later on.  Avoid this   */
+                /* in the future.                                        */
+                GC_mark_stack_too_small = TRUE;
+                MARK_FROM_MARK_STACK();
+                break;
+            } 
+            else 
+            {
+                scan_ptr = GC_push_next_marked_dirty(scan_ptr);
+                if (scan_ptr == 0) 
+                {
+#if !defined(GC_DISABLE_INCREMENTAL)
+                    GC_COND_LOG_PRINTF(&quot;Marked from %lu dirty pages\n&quot;,
+                                       (unsigned long)GC_n_rescuing_pages);
+#endif
+                    GC_push_roots(FALSE, cold_gc_frame); //扫描root
+                    GC_objects_are_marked = TRUE;
+                    if (GC_mark_state != MS_INVALID) 
+                    {
+                        GC_mark_state = MS_ROOTS_PUSHED;
+                    }
+                }
+            }
+            break;
+
+        ...
+</code></pre>
+<p>对于dirty hblk的处理逻辑在GC_push_next_marked_dirty中：</p>
+<pre><code>/* mark only from dirty pages   */
+STATIC struct hblk* GC_push_next_marked_dirty(struct hblk* h)
+{
+    hdr* hhdr = HDR(h);
+
+    for (;;) 
+    {
+        if (EXPECT(IS_FORWARDING_ADDR_OR_NIL(hhdr)
+            || HBLK_IS_FREE(hhdr), FALSE))
+        {
+            h = GC_next_used_block(h);
+            if (h == 0) return(0);
+            hhdr = GC_find_header((ptr_t)h);
+        }
+
+        if (GC_block_was_dirty(h, hhdr))
+            break;
+
+        h += OBJ_SZ_TO_BLOCKS(hhdr-&gt;hb_sz); 
+        hhdr = HDR(h);
+    }
+
+    GC_push_marked(h, hhdr);
+    return(h + OBJ_SZ_TO_BLOCKS(hhdr-&gt;hb_sz));
+}
+</code></pre>
+<p>为了处理所有的dirty hblk，会从heap的起始地址开始遍历，对于大对象来说，一次循环会跳过其包含的多个hblk，对于小对象来说，一次循环会跳过当前的hblk。在整个heap遍历完成，所有的dirty hblk都被扫描完成后退出循环，并开始扫描root，扫描方式和普通GC一样</p>
+<p>在遍历过程中，对于小对象会检查当前object所属的hblk是否是dirty，如果检测到有hblk为dirty，则通过GC_push_marked重新扫描当前hblk；对于大对象，则会检查当前object中是否有任意一个hblk为dirty，如果检测到有hblk为dirty，则通过GC_push_marked重新扫描对象下的所有hblk</p>
+<p><strong>GC_push_marked中，会扫描hblk（大对象为object），其扫描、判断值是否为指针的逻辑和正常GC一致，对于认定为指针的值，会将其指向的对象的mark标记位置为1，并将该指针压入到mark stack中（注意，被压入到mark stack中的是”一个需要被继续扫描其内部指针的对象的地址“），等待下一阶段进行递归式扫描标记</strong></p>
+<blockquote>
+<p>注意区分“遍历”和“扫描”：遍历只是按照步长判断堆中的hblk是否是dirty的；而扫描指的是对dirty对象本身进行扫描，即判断其对应的内存中是否有疑似指针的值，二者的成本不同，后者成本高于前者</p>
+</blockquote>
+<p><strong>可能存在的问题：</strong></p>
+<p><strong>为什么步长还是object，而不是hblk（4KB）？</strong></p>
+<p>个人猜测：选择object为步长，可以保证每个object只会被扫描一次，如果按照hblk4KB大小来遍历，虽说不会出现明显问题，但是对于占据了多个hblk的大对象来说，会导致该对象被多次扫描并加入到mark stack中，而扫描标记是整个GC中最昂贵的部分，带来了额外的性能消耗</p>
+<br>
+
+<p><strong>明明有全局的GC_dirty_pages位图结构，记录了到底哪个hblk为dirty，为什么还是需要遍历整个堆？</strong></p>
+<p>进一步的，完全可以根据bitmap中为dirty的序号，反推出是哪个hblk为脏，还能顺便通过全局__top_index定位到header，不需要遍历整个堆呀？确实是这样的，JVM的GC做法和这个思路类似，不会扫整个heap，而是根据set扫描对应的区域,具体原因尚不清楚</p>
+<br>
+
+<p><strong>对于小对象来说，实际上只有某个对象是dirty的，但是dirty标记的粒度为hblk，所以不得不把整个hblk全扫描一遍，这合理吗？</strong></p>
+<p>这是一个工程上的权衡，其保证了在WriteBarrier时速度较快，牺牲了GC时的扫描速度。并且对于GC_dirty_pages来说，其没法确定object有多少个、大小是多少，这是运行时决定的，所以没法实现WriteBarrier时以object为粒度进行标记</p>
+<br>
+
+<p><strong>为什么还需要扫描root？</strong></p>
+<pre><code>void newChange()
+{
+    GameObject obj = new GameObejct();
+    obj.field = otherObj;
+    //....
+    func(obj);  //出错！obj已经被回收
+}
+</code></pre>
+<p>比如，在两次GC期间创建了新的对象obj，如果不重新扫描root，会导致该新对象没有被mark，进而导致该obj被错误地回收，后续调用出错</p>
+<br>
+
+<p><strong>看起来增量式GC的工作量更大了，每一次GC都要扫描dirty对象、扫描root、递归地扫描heap中被引用的对象，这不是效率比普通GC更低了吗？</strong></p>
+<p><strong>增量式GC的总体工作量确实略高于普通GC，因为他需要额外处理每次GC间隔期间产生的dirty对象并且重新扫描root。但是，增量GC的核心优化在于将最昂贵的”从root出发递归扫描所有可达对象“拆分为了多次执行，从而将大规模的Mark操作摊平到了多个时间片中完成</strong></p>
+<p>具体来说，每次GC都会进入MS_PUSH_RESCUERS阶段，对dirty hblk重新扫描，并对root重新扫描，用于修复在上次GC到此次GC发生的新变化，比如创建了新变量、变更了引用关系等，其会将相应的新对象的地址push到mark stack中并等待扫描。<strong>实际上，这一阶段的工作量通常很小，因为需要扫描的对象并不多，其是增量式GC相较于普通GC的额外开销。</strong></p>
+<p>随后，会递归式地扫描标记mark stack，这才是真正耗时的工作，但是该工作会被均摊到多次增量式GC中完成，每次增量式GC的结果都保存在了mark stack中，达到上限时间后会重新启动用户线程，暂停GC，并等待下一轮增量式GC再继续扫描mark stack，从而避免了突然暂停用户线程较长时间</p>
+<br>
+
+<h2 id="full-GC"><a href="#full-GC" class="headerlink" title="full GC"></a>full GC</h2><p>可以看到，在GC_stopped_mark之前实际上还有一层full GC的判断逻辑</p>
+<pre><code>STATIC void GC_maybe_gc(void)
+{
+    if (GC_should_collect()) 
+    {
+        static int n_partial_gcs = 0;
+
+        if (!GC_incremental) 
+        {
+            ...
+        }
+        else 
+        {
+            if (GC_need_full_gc || n_partial_gcs &gt;= GC_full_freq) 
+            {
+                GC_COND_LOG_PRINTF(
+                    &quot;***&gt;Full mark for collection #%lu after %lu allocd bytes\n&quot;,
+                    (unsigned long)GC_gc_no + 1, (unsigned long)GC_bytes_allocd);
+
+                GC_promote_black_lists();
+                (void)GC_reclaim_all((GC_stop_func)0, TRUE);
+                GC_notify_full_gc();
+                GC_clear_marks();
+                n_partial_gcs = 0;
+                GC_is_full_gc = TRUE;
+            }
+            else 
+            {
+                n_partial_gcs++;
+            }
+        }
+
+        /* We try to mark with the world stopped.       */
+        /* If we run out of time, this turns into       */
+        /* incremental marking.                         */
+        if (GC_stopped_mark(GC_time_limit == GC_TIME_UNLIMITED ?
+            GC_never_stop_func : GC_timeout_stop_func)) 
+        {
+            GC_finish_collection();
+        }
+        else 
+        {
+            if (!GC_is_full_gc) 
+            {
+                /* Count this as the first attempt */
+                GC_n_attempts++;
+            }
+        }
+    }
+}
+</code></pre>
+<p><strong>什么时候触发full GC？为什么？</strong></p>
+<ul>
+<li><p>周期性强制full GC，即n_partial_gcs &gt;&#x3D; GC_full_freq，意思是没进行N次增量式GC，就强制进行一次full GC，N为1。原因：在两次增量GC期间，如果用户线程对象创建或修改引用关系非常频繁，那么会导致mark stack中的增长速度快于每次GC扫描的处理速度，进而导致增量GC永远处理不完，所以需要full GC来进行一次全量标记</p>
+</li>
+<li><p>如果内存增长过多，即GC_need_full_gc（会在每次增量式GC后判断，从上一次回收以来，如果新投入使用的hblk大于当前objects大小除以2，则为true），那么也会触发full GC。同样的原因，如果有增量回收的内存满足不了内存分配的趋势，则同样会触发一次Full GC来进行全量标记，进而将内存回收</p>
+</li>
+</ul>
+<p><strong>full GC会做什么？</strong></p>
+<p>full GC会进行一次完整的普通GC。首先会对之前mark stack中的对象进行扫描，完成收尾工作，然后按照类似于普通GC的逻辑，将所有的用户线程暂停，将mark bit清空，扫描root并递归式地扫描标记所有被引用的对象，此时才允许启动用户线程，后续再通过后台线程进行回收工作</p>
+<br>
+
+<h1 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h1><p>通过本篇对增量式GC的拆解，我们可以清晰地看到这种权衡的全貌：</p>
+<p>Write Barrier​ 是增量并发的基石。它通过在引用变更时记录dirty状态，解决了“GC扫描时用户线程修改引用”这一经典难题，代价是每次赋值多了一层函数调用的开销。</p>
+<p>Dirty Page 重扫描​ 是增量正确性的保障。它确保了两次GC间隔中新创建的对象或变更的引用不会被遗漏，即便这意味着需要遍历堆中的标记位。</p>
+<p>Full GC 的兜底​ 揭示了工程的现实。无论增量机制多么精巧，当内存增长速度超过回收速度，或者碎片化严重时，一次彻底的全量暂停仍是不可避免的终极手段。</p>
+<p>增量式 GC 并未改变 Boehm GC 的保守式本质，而是通过 Write Barrier 与状态机驱动的增量标记，将一次不可避免的“大停顿”平滑化为多次可控的“小停顿”。这是 Unity 在跨平台兼容性与实时性要求之间，做出的一项极具工程智慧的折中设计。</p>
+</article><div class="post-copyright"><div class="post-copyright__author"><span class="post-copyright-meta"><i class="fas fa-circle-user fa-fw"></i>文章作者: </span><span class="post-copyright-info"><a href="http://www.aixheee.top">Aixheee</a></span></div><div class="post-copyright__type"><span class="post-copyright-meta"><i class="fas fa-square-arrow-up-right fa-fw"></i>文章链接: </span><span class="post-copyright-info"><a href="http://www.aixheee.top/posts/UnityGC_2.html">http://www.aixheee.top/posts/UnityGC_2.html</a></span></div><div class="post-copyright__notice"><span class="post-copyright-meta"><i class="fas fa-circle-exclamation fa-fw"></i>版权声明: </span><span class="post-copyright-info">本博客所有文章除特别声明外，均采用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">CC BY-NC-SA 4.0</a> 许可协议。转载请注明来源 <a href="http://www.aixheee.top" target="_blank">Aixheee`Blog</a>！</span></div></div><div class="tag_share"><div class="post-share"><div class="social-share" data-image="/img/avatar.jpg" data-sites="facebook,x,wechat,weibo,qq"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/sharejs/dist/css/share.min.css" media="print" onload="this.media='all'"><script src="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/sharejs/dist/js/social-share.min.js" defer></script></div></div></div><div class="aside-content" id="aside-content"><div class="card-widget card-info text-center"><div class="avatar-img"><img src="/img/avatar.jpg" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="author-info-name">Aixheee</div><div class="author-info-description">明道若昧，进道若退，夷道若纇</div><div class="site-data"><a href="/archives/"><div class="headline">文章</div><div class="length-num">13</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">3</div></a></div><div class="card-info-social-icons"><a class="social-icon" href="https://gitee.com/Aixheee" target="_blank" title="Gitee"><i class="fab fa-github" style="color: #24292e;"></i></a><a class="social-icon" href="mailto:Aixheee@outlook.com" target="_blank" title="Email"><i class="fas fa-envelope" style="color: #4a7dbe;"></i></a></div></div><div class="sticky_layout"><div class="card-widget" id="card-toc"><div class="item-headline"><i class="fas fa-stream"></i><span>目录</span><span class="toc-percentage"></span></div><div class="toc-content"><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#WriteBarrier"><span class="toc-number">1.</span> <span class="toc-text">WriteBarrier</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E8%A7%A6%E5%8F%91%E5%9B%9E%E6%94%B6"><span class="toc-number">2.</span> <span class="toc-text">触发回收</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E7%8A%B6%E6%80%81%E8%BD%AC%E6%8D%A2"><span class="toc-number">3.</span> <span class="toc-text">状态转换</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#MS-PUSH-RESCUERS"><span class="toc-number">3.1.</span> <span class="toc-text">MS_PUSH_RESCUERS</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#full-GC"><span class="toc-number">3.2.</span> <span class="toc-text">full GC</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E6%80%BB%E7%BB%93"><span class="toc-number">4.</span> <span class="toc-text">总结</span></a></li></ol></div></div><div class="card-widget card-recent-post"><div class="item-headline"><i class="fas fa-history"></i><span>最新文章</span></div><div class="aside-list"><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/posts/stack_and_signal.html" title="从栈到信号：操作系统如何操作、切换和修改执行流">从栈到信号：操作系统如何操作、切换和修改执行流</a><time datetime="2026-06-06T16:00:00.000Z" title="发表于 2026-06-07 00:00:00">2026-06-07</time></div></div><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/posts/delegate.html" title="回调 委托">回调 委托</a><time datetime="2026-06-04T16:00:00.000Z" title="发表于 2026-06-05 00:00:00">2026-06-05</time></div></div><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/posts/UnityGC.html" title="【内存分配与管理】Unity GC">【内存分配与管理】Unity GC</a><time datetime="2026-06-02T16:00:00.000Z" title="发表于 2026-06-03 00:00:00">2026-06-03</time></div></div></div></div></div></div></main><footer id="footer"><div class="footer-other"><div class="footer-copyright"><span class="copyright">&copy;&nbsp;2026 By Aixheee</span></div></div></footer></div><div id="rightside"><div id="rightside-config-hide"><button id="readmode" type="button" title="阅读模式"><i class="fas fa-book-open"></i></button><button id="darkmode" type="button" title="日间和夜间模式切换"><i class="fas fa-adjust"></i></button><button id="hide-aside-btn" type="button" title="单栏和双栏切换"><i class="fas fa-arrows-alt-h"></i></button></div><div id="rightside-config-show"><button id="rightside-config" type="button" title="设置"><i class="fas fa-cog fa-spin"></i></button><button class="close" id="mobile-toc-button" type="button" title="目录"><i class="fas fa-list-ul"></i></button><button id="go-up" type="button" title="回到顶部"><span class="scroll-percent"></span><i class="fas fa-arrow-up"></i></button></div></div><div><script src="/js/utils.js?v=5.5.4"></script><script src="/js/main.js?v=5.5.4"></script><div class="js-pjax"></div><script async data-pjax src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script><div id="local-search"><div class="search-dialog"><nav class="search-nav"><span class="search-dialog-title">搜索</span><i class="fas fa-spinner fa-pulse" id="loading-status" hidden="hidden"></i><button class="search-close-button"><i class="fas fa-times"></i></button></nav><div class="text-center" id="loading-database"><i class="fas fa-spinner fa-pulse"></i><span>  数据加载中</span></div><div class="local-search-input"><input placeholder="搜索文章" type="text"/></div><hr/><div id="local-search-results"></div><div class="ais-Pagination" id="local-search-pagination" style="display:none;"><ul class="ais-Pagination-list"></ul></div><div id="local-search-stats"></div></div><div id="search-mask"></div><script src="/js/search/local-search.js?v=5.5.4"></script></div></div><!-- hexo injector body_end start --><script data-pjax>
+    function butterfly_categories_card_injector_config(){
+      var parent_div_git = document.getElementById('recent-posts');
+      var item_html = '<style>li.categoryBar-list-item{width:32.3%;}.categoryBar-list{max-height: 190px;overflow:auto;}.categoryBar-list::-webkit-scrollbar{width:0!important}@media screen and (max-width: 650px){.categoryBar-list{max-height: 160px;}}</style><div class="recent-post-item" style="height:auto;width:100%;padding:0px;"><div id="categoryBar"><ul class="categoryBar-list"><li class="categoryBar-list-item" style="background:url(http://img.aixheee.top/8ce5613f2f8cc2266406757796a5f2d8.png);"> <a class="categoryBar-list-link" href="categories/操作系统/">操作系统</a><span class="categoryBar-list-count">1</span><span class="categoryBar-list-descr"></span></li><li class="categoryBar-list-item" style="background:url(http://img.aixheee.top/cate2.png);"> <a class="categoryBar-list-link" href="categories/C/">C#</a><span class="categoryBar-list-count">1</span><span class="categoryBar-list-descr"></span></li><li class="categoryBar-list-item" style="background:url(http://img.aixheee.top/cate3.png);"> <a class="categoryBar-list-link" href="categories/内存分配与管理/">内存分配与管理</a><span class="categoryBar-list-count">11</span><span class="categoryBar-list-descr"></span></li></ul></div></div>';
+      console.log('已挂载butterfly_categories_card')
+      parent_div_git.insertAdjacentHTML("afterbegin",item_html)
+      }
+    if( document.getElementById('recent-posts') && (location.pathname ==='/'|| '/' ==='all')){
+    butterfly_categories_card_injector_config()
+    }
+  </script><!-- hexo injector body_end end --></body></html>

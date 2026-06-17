@@ -1,0 +1,494 @@
+<!DOCTYPE html><html lang="zh-CN" data-theme="light"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0,viewport-fit=cover"><title>回调 委托 | Aixheee`Blog</title><meta name="author" content="Aixheee"><meta name="copyright" content="Aixheee"><meta name="format-detection" content="telephone=no"><meta name="theme-color" content="#ffffff"><meta name="description" content="本篇文章主要讲解委托的底层原理，但在此之前，我们必须先理清委托究竟是什么——其不过是 callback 在 C# 中的具象化体现。​因此，在真正进入委托的底层实现之前，我们需要先回到 callback 本身：它是如何工作的、为什么需要它、以及它在异步与解耦中的角色。理解了这些，再看委托的内部结构、多播机制和调用流程，就会变得顺理成章。 理解callback【callback是什么？】callbac">
+<meta property="og:type" content="article">
+<meta property="og:title" content="回调 委托">
+<meta property="og:url" content="http://www.aixheee.top/posts/delegate.html">
+<meta property="og:site_name" content="Aixheee&#96;Blog">
+<meta property="og:description" content="本篇文章主要讲解委托的底层原理，但在此之前，我们必须先理清委托究竟是什么——其不过是 callback 在 C# 中的具象化体现。​因此，在真正进入委托的底层实现之前，我们需要先回到 callback 本身：它是如何工作的、为什么需要它、以及它在异步与解耦中的角色。理解了这些，再看委托的内部结构、多播机制和调用流程，就会变得顺理成章。 理解callback【callback是什么？】callbac">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="http://www.aixheee.top/img/avatar.jpg">
+<meta property="article:published_time" content="2026-06-04T16:00:00.000Z">
+<meta property="article:modified_time" content="2026-06-04T16:00:00.000Z">
+<meta property="article:author" content="Aixheee">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="http://www.aixheee.top/img/avatar.jpg"><script type="application/ld+json">{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "回调 委托",
+  "url": "http://www.aixheee.top/posts/delegate.html",
+  "image": "http://www.aixheee.top/img/avatar.jpg",
+  "datePublished": "2026-06-04T16:00:00.000Z",
+  "dateModified": "2026-06-04T16:00:00.000Z",
+  "author": [
+    {
+      "@type": "Person",
+      "name": "Aixheee",
+      "url": "http://www.aixheee.top"
+    }
+  ]
+}</script><link rel="shortcut icon" href="/img/fav.png"><link rel="canonical" href="http://www.aixheee.top/posts/delegate.html"><link rel="preconnect" href="//cdn.jsdelivr.net"/><link rel="preconnect" href="//busuanzi.ibruce.info"/><link rel="stylesheet" href="/css/index.css?v=5.5.4"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7.1.0/css/all.min.css"><script>
+    (() => {
+      
+    const saveToLocal = {
+      set: (key, value, ttl) => {
+        if (!ttl) return
+        const expiry = Date.now() + ttl * 86400000
+        localStorage.setItem(key, JSON.stringify({ value, expiry }))
+      },
+      get: key => {
+        const itemStr = localStorage.getItem(key)
+        if (!itemStr) return undefined
+        const { value, expiry } = JSON.parse(itemStr)
+        if (Date.now() > expiry) {
+          localStorage.removeItem(key)
+          return undefined
+        }
+        return value
+      }
+    }
+
+    window.btf = {
+      saveToLocal,
+      getScript: (url, attr = {}) => new Promise((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = url
+        script.async = true
+        Object.entries(attr).forEach(([key, val]) => script.setAttribute(key, val))
+        script.onload = script.onreadystatechange = () => {
+          if (!script.readyState || /loaded|complete/.test(script.readyState)) resolve()
+        }
+        script.onerror = reject
+        document.head.appendChild(script)
+      }),
+      getCSS: (url, id) => new Promise((resolve, reject) => {
+        const link = document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = url
+        if (id) link.id = id
+        link.onload = link.onreadystatechange = () => {
+          if (!link.readyState || /loaded|complete/.test(link.readyState)) resolve()
+        }
+        link.onerror = reject
+        document.head.appendChild(link)
+      }),
+      addGlobalFn: (key, fn, name = false, parent = window) => {
+        if (!false && key.startsWith('pjax')) return
+        const globalFn = parent.globalFn || {}
+        globalFn[key] = globalFn[key] || {}
+        globalFn[key][name || Object.keys(globalFn[key]).length] = fn
+        parent.globalFn = globalFn
+      }
+    }
+  
+      
+      const activateDarkMode = () => {
+        document.documentElement.setAttribute('data-theme', 'dark')
+        if (document.querySelector('meta[name="theme-color"]') !== null) {
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#0d0d0d')
+        }
+      }
+      const activateLightMode = () => {
+        document.documentElement.setAttribute('data-theme', 'light')
+        if (document.querySelector('meta[name="theme-color"]') !== null) {
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff')
+        }
+      }
+
+      btf.activateDarkMode = activateDarkMode
+      btf.activateLightMode = activateLightMode
+
+      const theme = saveToLocal.get('theme')
+    
+          theme === 'dark' ? activateDarkMode() : theme === 'light' ? activateLightMode() : null
+        
+      
+      const asideStatus = saveToLocal.get('aside-status')
+      if (asideStatus !== undefined) {
+        document.documentElement.classList.toggle('hide-aside', asideStatus === 'hide')
+      }
+    
+      
+    const detectApple = () => {
+      if (/iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent)) {
+        document.documentElement.classList.add('apple')
+      }
+    }
+    detectApple()
+  
+    })()
+  </script><script>const GLOBAL_CONFIG = {
+  root: '/',
+  algolia: undefined,
+  localSearch: {"path":"/search.xml","preload":false,"top_n_per_article":1,"unescape":false,"pagination":{"enable":false,"hitsPerPage":8},"languages":{"hits_empty":"未找到符合您查询的内容：${query}","hits_stats":"共找到 ${hits} 篇文章"}},
+  translate: undefined,
+  highlight: {"plugin":"highlight.js","highlightCopy":true,"highlightLang":true,"highlightHeightLimit":230,"highlightFullpage":false,"highlightMacStyle":false},
+  copy: {
+    success: '复制成功',
+    error: '复制失败',
+    noSupport: '浏览器不支持'
+  },
+  relativeDate: {
+    homepage: false,
+    post: false
+  },
+  runtime: '',
+  dateSuffix: {
+    just: '刚刚',
+    min: '分钟前',
+    hour: '小时前',
+    day: '天前',
+    month: '个月前'
+  },
+  copyright: {"limitCount":100,"languages":{"author":"作者: Aixheee","link":"链接: ","source":"来源: Aixheee`Blog","info":"著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。"}},
+  lightbox: 'null',
+  Snackbar: undefined,
+  infinitegrid: {
+    js: 'https://cdn.jsdelivr.net/npm/@egjs/infinitegrid@4.13.0/dist/infinitegrid.min.js',
+    buttonText: '加载更多'
+  },
+  isPhotoFigcaption: false,
+  islazyloadPlugin: false,
+  isAnchor: false,
+  percent: {
+    toc: true,
+    rightside: false,
+  },
+  autoDarkmode: false
+}</script><script id="config-diff">var GLOBAL_CONFIG_SITE = {
+  title: '回调 委托',
+  isHighlightShrink: false,
+  isToc: true,
+  pageType: 'post'
+}</script><link rel="stylesheet" href="/css/custom.css"><meta name="referrer" content="no-referrer"><style>
+  /* 隐藏分类卡片中的方框伪元素 */
+  .categoryBar-list-count::before {
+    display: none !important;
+  }
+  /* 如果还有其它方框，也一起隐藏 */
+  .category-bar-item::before,
+  .category-bar-item::after,
+  [class*="category"]::before {
+    display: none !important;
+  }
+</style>
+<!-- hexo injector head_end start --><link rel="stylesheet" href="https://npm.elemecdn.com/hexo-butterfly-categories-card@1.0.0/lib/categorybar.css"><!-- hexo injector head_end end --><meta name="generator" content="Hexo 8.1.1"></head><body><div class="bg-animation" id="web_bg" style="background-image: url(https://raw.githubusercontent.com/Aixheee/Aixheee.github.io/main/img/back.jpg);"></div><div id="sidebar"><div id="menu-mask"></div><div id="sidebar-menus"><div class="avatar-img text-center"><img src="/img/avatar.jpg" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="site-data text-center"><a href="/archives/"><div class="headline">文章</div><div class="length-num">13</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">3</div></a></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> 分类</span></a></div><div class="menus_item"><span class="site-page group"><i class="fa-fw fa fa-heartbeat"></i><span> 清单</span><i class="fas fa-chevron-down"></i></span><ul class="menus_item_child"><li><a class="site-page child" href="/music/"><i class="fa-fw fas fa-music"></i><span> 音乐</span></a></li><li><a class="site-page child" href="/Gallery/"><i class="fa-fw fas fa-images"></i><span> 照片</span></a></li><li><a class="site-page child" href="/movies/"><i class="fa-fw fas fa-video"></i><span> 电影</span></a></li></ul></div><div class="menus_item"><a class="site-page" href="/link/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heart"></i><span> 关于</span></a></div></div></div></div><div class="post" id="body-wrap"><header class="post-bg" id="page-header"><nav id="nav"><span id="blog-info"><a class="nav-site-title" href="/"><span class="site-name">Aixheee`Blog</span></a><a class="nav-page-title" href="/"><span class="site-name">回调 委托</span><span class="site-name"><i class="fa-solid fa-circle-arrow-left"></i><span>  返回首页</span></span></a></span><div id="menus"><div id="search-button"><span class="site-page social-icon search"><i class="fas fa-search fa-fw"></i><span> 搜索</span></span></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> 分类</span></a></div><div class="menus_item"><span class="site-page group"><i class="fa-fw fa fa-heartbeat"></i><span> 清单</span><i class="fas fa-chevron-down"></i></span><ul class="menus_item_child"><li><a class="site-page child" href="/music/"><i class="fa-fw fas fa-music"></i><span> 音乐</span></a></li><li><a class="site-page child" href="/Gallery/"><i class="fa-fw fas fa-images"></i><span> 照片</span></a></li><li><a class="site-page child" href="/movies/"><i class="fa-fw fas fa-video"></i><span> 电影</span></a></li></ul></div><div class="menus_item"><a class="site-page" href="/link/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heart"></i><span> 关于</span></a></div></div><div id="toggle-menu"><span class="site-page"><i class="fas fa-bars fa-fw"></i></span></div></div></nav><div id="post-info"><h1 class="post-title">回调 委托</h1><div id="post-meta"><div class="meta-firstline"><span class="post-meta-date"><i class="far fa-calendar-alt fa-fw post-meta-icon"></i><span class="post-meta-label">发表于</span><time class="post-meta-date-created" datetime="2026-06-04T16:00:00.000Z" title="发表于 2026-06-05 00:00:00">2026-06-05</time><span class="post-meta-separator">|</span><i class="fas fa-history fa-fw post-meta-icon"></i><span class="post-meta-label">更新于</span><time class="post-meta-date-updated" datetime="2026-06-04T16:00:00.000Z" title="更新于 2026-06-05 00:00:00">2026-06-05</time></span><span class="post-meta-categories"><span class="post-meta-separator">|</span><i class="fas fa-inbox fa-fw post-meta-icon"></i><a class="post-meta-categories" href="/categories/C/">C#</a></span></div><div class="meta-secondline"><span class="post-meta-separator">|</span><span class="post-meta-pv-cv" id="" data-flag-title=""><i class="far fa-eye fa-fw post-meta-icon"></i><span class="post-meta-label">浏览量:</span><span id="busuanzi_value_page_pv"><i class="fa-solid fa-spinner fa-spin"></i></span></span></div></div></div></header><main class="layout" id="content-inner"><div id="post"><article class="container post-content" id="article-container"><p>本篇文章主要讲解委托的底层原理，但在此之前，我们必须先理清委托究竟是什么——其不过是 callback 在 C# 中的具象化体现。​因此，在真正进入委托的底层实现之前，我们需要先回到 callback 本身：它是如何工作的、为什么需要它、以及它在异步与解耦中的角色。理解了这些，再看委托的内部结构、多播机制和调用流程，就会变得顺理成章。</p>
+<h1 id="理解callback"><a href="#理解callback" class="headerlink" title="理解callback"></a>理解callback</h1><p>【callback是什么？】callback是一种思想，其核心原理是：你定义一个函数，将其作为参数交给某个框架、库，对方将其保存起来，等到某个条件满足时，比如资源加载完成、状态发生变化时，再执行该函数。</p>
+<p>【为什么要有callback？】<strong>而之所以要有callback，其根本动机是为了实现控制权的反转</strong>，callback函数就像是一个钩子函数一样，你将你自己的逻辑“挂到”一个更大的系统中，将逻辑的调用权从你手里，转换到了框架手里，由框架在它自己的某个生命周期节点调用你的函数。从callback这个名字中也能感受到这层意思：不是我主动call你，而是你在合适的时机call back我</p>
+<p><strong>这样做的意义是可以让模块间解耦，这也是callback的首要目标。</strong> 比如一个资源下载系统，用户需要在下载完成后执行一些逻辑，比如将下载的资源显示出来，或是打印日志等，这些逻辑不应该由资源下载系统决定，资源下载系统也不可能知道你用户到底想干什么，此时就需要callback——由用户将“资源下载完成后的逻辑”，通过参数的方式传递给资源下载函数，此时该函数的调用权就到了资源下载系统手中，等到资源下载完成时则会调用该逻辑</p>
+<pre><code>//资源下载系统：
+void Download(Action onComplete)
+{
+    // 下载逻辑
+    //.....
+    //下载完成 调用用户传入的逻辑
+    onComplete?.Invoke();
+}
+
+//用户：
+Download(() =&gt; {
+    Debug.Log(&quot;UI更新&quot;);
+});
+</code></pre>
+<p>【什么场景下需要callback呢？】在callback核心原理中提到，函数逻辑“等到某个条件满足时”再被调用。这里”等“的主体是帮你做事的系统、框架等，而不是要你去等，你在将callback函数交给系统、框架后就继续向后执行了，称其为异步，<strong>异步是callback最经典的应用场景</strong>。比如网络请求、IO操作、事件系统等，其都不能立马返回结果，只能在未来条件满足时通知你，此时callback在时序上进行解耦</p>
+<p>相对地，如果“等”的主体是你，即同步，那么没必要使用callback（实际上，在同步下使用callback可以理解为”策略注入“，这里说没必要指的是没必要为了在时序上解耦而使用callback，因为不存在耦合）。如果条件都满足了，比如资源都加载完成了，那为什么不直接将资源作为返回值直接给你呢？直接根据结果进行调用不就好了？但这种方法闲置了CPU资源，在你等待期间，主线程一直被阻塞，难以处理高并发需求</p>
+<p>如果我们从栈与函数调用的角度来看：同步下，函数的后续执行可以依赖于栈机制自动恢复，继续调用你提供的函数；但是在异步下，函数在获取到结果返回前就已经结束了，调用栈被销毁，因此必须将”后续的逻辑“从栈中“剥离”出来，以callback的方式保存，以在未来由完成方调用。</p>
+<p>【callback的语言级别的实现？】C中的函数指针、C++中的lambda、function、C#中的委托等等，本质上都是在实现callback，只不过其具有的能力不同</p>
+<p>C的函数指针，本质上就是告诉框架、系统一段函数地址，条件满足后你条过去执行就可以，这是最基本、最本质的实现；而C++中的lambda&#x2F;C#的委托则通过闭包来支持上下文的捕获，此时的callback就不只是函数地址了，还有一份上下文数据；而C++中的function则是将多种callback的形式做了一个统一，其可以支持装载函数对象、lambda、bind等</p>
+<blockquote>
+<p>这里提到了闭包，实际上闭包的好处不止是提供了上下文数据，其在内存管理上同样起到了十分重要的作用。在没有GC的语言下，比如C++，其通过RAII的思想，通过作用域来管理资源的生命周期。而在异步编程下，作用域起不到较好的资源管理作用，容易出现资源提前释放或泄露的问题，所以可以让闭包持有资源的所有权，将栈上的资源提升到堆，让资源脱离原有的作用域并延续其生命周期，再利用闭包的作用域机制将资源安全释放</p>
+</blockquote>
+<p>【callback的缺点在哪？】callback最严重的问题在于异步链条过长，callback层层嵌套，导致代码可读性差。而为了解决这个问题，从而出现了async&#x2F;await这样的语法糖，允许我们以同步的方式写异步，通过底层的状态机对象以及回调注册机制，自动帮我们实现callback的效果</p>
+<pre><code>getUser(id, function(user) {
+  getOrders(user, function(orders) {
+    getDetails(orders, function(details) {
+      console.log(details);
+    });
+  });
+});
+</code></pre>
+<h1 id="理解委托-事件"><a href="#理解委托-事件" class="headerlink" title="理解委托 事件"></a>理解委托 事件</h1><p><strong>委托是一个面向对象的，类型安全的函数指针。</strong> 具体来说，其相比于C&#x2F;C++中的函数指针有三个不一样的地方：</p>
+<ul>
+<li><p>面向对象。当我们通过delegate void Demo()声明一个委托时，本质上就是定义了一个叫做Demo的类型；而当我们创建委托实例时，比如Demo ptr &#x3D; this.DoSomething时，本质上就是实例化该委托类并将其中包含的函数指针、对象指针赋值，和C&#x2F;C++中获取函数指针类似；当我们只有委托时，比如ptr.Invoke()，本质上就是C&#x2F;C++中通过函数指针对函数进行调用。所以说，委托是一个面向对象的函数指针，其将各种对函数指针的操作都封装在了类中</p>
+</li>
+<li><p>类型安全。委托作为一个托管类，其同样也要遵守一般类的规则，哪怕返回值、参数列表相同，但是名称不同，在CLR看来就是两个相互独立的类，不允许相互转型</p>
+</li>
+<li><p>多播。这是委托相较于函数指针独有的特点，允许为一个委托对象绑定多个方法，底层通过数组承载，在执行委托时，会依次执行这些方法</p>
+</li>
+</ul>
+<p><strong>事件和委托？</strong></p>
+<p><strong>事件是对委托的一次封装。</strong> 委托本质上是一个类，所以委托字段就和其他字段一样，最好被封装为属性，不要直接暴露给外界。而对于委托类型的字段来说，其就是被封装为事件——属性通过get&#x2F;set方法提供对字段的访问，而事件则提供add&#x2F;remove方法，提供对委托的访问</p>
+<h1 id="委托底层原理"><a href="#委托底层原理" class="headerlink" title="委托底层原理"></a>委托底层原理</h1><p>当我们定义一个委托类型时，编译器会为我们生成一个对应的类，类中主要会维护三个指针：一个是对象指针，指向this(当是成员函数时)或者委托实例自己(当是静态函数时)，另外两个是方法指针，分别指向成员函数和静态函数。</p>
+<pre><code>public abstract partial class Delegate : ICloneable, ISerializable
+{
+    internal object? _target; //如果注册的是实例方法，则是this指针，如果是静态则是delegate实例自己。
+
+    internal object? _methodBase; //缓存
+
+    internal IntPtr _methodPtr;//实例方法的入口，看到IntPtr关键字就知道要与非托管堆交互，必然就是函数指针了，
+
+    internal IntPtr _methodPtrAux;//静态方法的入口
+}
+
+public abstract class MulticastDelegate : Delegate
+{
+ //多播委托的底层基石
+    private object? _invocationList; 
+    private nint _invocationCount;
+
+ //实例委托调用此方法
+ private void CtorClosed(object target, IntPtr methodPtr)
+    {
+        if (target == null)
+            ThrowNullThisInDelegateToInstance();
+        this._target = target;
+        this._methodPtr = methodPtr;//函数指针被指向_methodPtrAux
+    }
+ //静态委托调用此方法
+ private void CtorOpened(object target, IntPtr methodPtr, IntPtr shuffleThunk)
+    {
+        this._target = this;//上面说到，_target的注释不对的判断就在此
+        this._methodPtr = shuffleThunk;//与实例委托不同，这里被指向一个桩函数
+        this._methodPtrAux = methodPtr;//函数指针被指向_methodPtrAux
+    }
+}
+</code></pre>
+<p>在为委托赋值时，底层会根据该方法对应的<strong>MethodDesc运行时对象</strong>中的信息（但是根本的信息来源是MethodDef元数据），判断该对象是一个静态方法还是一个成员方法（实际上会更复杂，这里简化），并调用对应的函数：</p>
+<ul>
+<li><p>如果是静态方法：则调用CtorOpened，让对象指针指向委托自己，并为对应的函数指针赋值</p>
+</li>
+<li><p>如果是成员方法：则调用CtorClosed，让对象指针指向实例对象，同样为对应的函数指针赋值</p>
+</li>
+</ul>
+<p>此时，三个指针都已经初始化完成，之后就可以通过使用委托时，就可以在底层通过对象指针调用到对应的成员方法了。<strong>不过，成员方法的调用和静态方法的调用并不相同：前者需要传入this指针，而后者不需要。所以为了统一调用模型，会在静态方法的调用上额外做一层适配</strong></p>
+<pre><code>//实例方法：
+delegate.Invoke()
+  → _methodPtr(target, args...)
+
+//静态方法：
+delegate.Invoke()
+   → _methodPtr (thunk)
+        → 调用 _methodPtrAux (真正静态函数)
+
+_methodPtr指向的适配函数：
+void ShuffleThunk(object target, int x)
+{
+    // 忽略 target（因为静态方法不需要 this）
+    // 调用 _methodPtrAux 指向的静态函数
+    RealStaticMethod(x);
+}
+</code></pre>
+<h1 id="多播委托的实现"><a href="#多播委托的实现" class="headerlink" title="多播委托的实现"></a>多播委托的实现</h1><p><img src="https://img.aixheee.top/6202def1-318b-4d89-935f-b2b37617794d.png"></p>
+<p><img src="https://img.aixheee.top/f7768824-d870-4180-b3e2-c9770e4e2464.png"></p>
+<p>多播委托的实现依赖于MulticastDelegate中的两个字段：</p>
+<ul>
+<li><p>_invocationList：其是一个object[]，专门用于存储委托调用列表，其使用方式和扩容策略类似于List</p>
+</li>
+<li><p>_invocationCount：代表了列表中委托的数量</p>
+</li>
+</ul>
+<p>+&#x3D;时所依赖的关键函数CombineImpl：</p>
+<p>在调用 +&#x3D; 时，其负责将当前delegate和其他delegate组合为一个新的delegate。在要放入新的delegate时，会尝试将delegate放入到原先的object[]中。但如果要放入的位置上已经有delegate且不相同，或者说obejct[]中根本没地方放，则会通过二倍扩容的方式，新分配一个object[]并拷贝数据（对于引用类型来说是浅拷贝）、追加新delegate。在放入完成后，会分配一个新的delegate对象并返回，其引用的是一个新的object[]，并更新_invocationCount</p>
+<blockquote>
+<p>注意，是返回一个新的delegate对象，而不会复用同一个delegate对象(为了优化，会尝试复用同一个object[])。因为委托属于“不可变对象”，有点像值语义对象，类似于C#的string类型，以保证行为可预测，防止出现意外，同时多线程访问安全。比如以下场景：</p>
+<pre><code>void Register(Action handler)
+{
+    // 如果委托可变
+    handler += AnotherMethod;  // 修改了传入的委托！
+    // 外部调用方会惊讶地发现自己的委托被改变了
+}
+</code></pre>
+</blockquote>
+<p>之所以有可能要放入的位置上已经有了delegate，是因为不同的delegate对象可能共享同一个object[]，只不过通过_invocationCount来代表其所拥有的delegate，以在遍历调用时确定实际范围，比如以下场景：</p>
+<pre><code>Action a = A + B + C;
+Action b = a;
+
+a += D;
+
+//object[]可能是这样的：
+[A, B, C, D, null, null]
+//a和b共享同一个object[]（注意，a和b只是共享object[]，而不共享Action对象），但是 a._invocationCount = 4，b._invocationCount = 3
+b: count=3 → A, B, C
+a: count=4 → A, B, C, D
+</code></pre>
+<p>CombineImpl具体逻辑：<a target="_blank" rel="noopener" href="https://github.com/dotnet/runtime/blob/main/src/coreclr/System.Private.CoreLib/src/System/MulticastDelegate.CoreCLR.cs#L212">runtime&#x2F;src&#x2F;coreclr&#x2F;System.Private.CoreLib&#x2F;src&#x2F;System&#x2F;MulticastDelegate.CoreCLR.cs at main · dotnet&#x2F;runtime</a></p>
+<pre><code>protected sealed override Delegate CombineImpl(Delegate? follow)
+{
+    // 1. 空值检查：如果 follow 是 null，直接返回当前委托本身
+    if (follow is null)
+        return this;
+
+    // 2. 类型安全检查：确保要合并的两个委托的类型签名完全一致
+    if (!InternalEqualTypes(this, follow))
+        throw new ArgumentException(SR.Arg_DlgtTypeMis);
+
+    // 3. 转换为多播委托类型以便访问内部字段
+    MulticastDelegate dFollow = (MulticastDelegate)follow;
+
+    // 4. 分析 follow 委托的结构
+    object[]? resultList;           // 结果列表，将存储合并后的所有委托
+    int followCount = 1;            // follow 中的委托数量，默认是单播委托
+    object[]? followList = dFollow._invocationList as object[];  // 获取 follow 的调用列表
+
+    // 如果 followList 不为 null，说明 follow 是一个多播委托
+    if (followList != null)
+        followCount = (int)dFollow._invocationCount;  // 从字段中获取实际的委托数量
+
+    int resultCount;  // 合并后的总委托数量
+
+    // 5. 情况1：当前委托是单播委托（_invocationList 不是 object[]）
+    if (_invocationList is not object[] invocationList)
+    {
+        // 5.1 计算合并后的总数量 = 当前委托(1) + follow 中的委托数量
+        resultCount = 1 + followCount;
+
+        // 5.2 创建结果数组，长度为总数量
+        resultList = new object[resultCount];
+
+        // 5.3 将当前委托放入数组首位
+        resultList[0] = this;
+
+        // 5.4 将 follow 的委托列表复制到结果数组中
+        if (followList == null)
+        {
+            // 如果 follow 是单播，直接放入第二个位置
+            resultList[1] = dFollow;
+        }
+        else
+        {
+            // 如果 follow 是多播，遍历其调用列表
+            for (int i = 0; i &lt; followCount; i++)
+                resultList[1 + i] = followList[i];
+        }
+
+        // 5.5 创建新的多播委托（当前是单播，所以 thisIsMultiCastAlready = false）
+        return NewMulticastDelegate(resultList, resultCount);
+    }
+    // 6. 情况2：当前委托已经是多播委托
+    else
+    {
+        // 6.1 获取当前多播委托的委托数量和调用列表
+        int invocationCount = (int)_invocationCount;
+        resultCount = invocationCount + followCount;  // 计算合并后的总数量
+
+        resultList = null;  // 结果列表初始化为空
+
+        // 6.2 尝试复用当前委托的调用列表数组（空间足够时才尝试复用）
+        if (resultCount &lt;= invocationList.Length)
+        {
+            resultList = invocationList;  // 复用现有数组
+
+            if (followList == null)
+            {
+                // 如果 follow 是单播委托，尝试将其设置到数组的可用位置
+                if (!TrySetSlot(resultList, invocationCount, dFollow))
+                    resultList = null;  // 设置失败（如重复委托），放弃复用
+            }
+            else
+            {
+                // 如果 follow 是多播委托，尝试设置其中的每个委托
+                for (int i = 0; i &lt; followCount; i++)
+                {
+                    if (!TrySetSlot(resultList, invocationCount + i, followList[i]))
+                    {
+                        resultList = null;  // 任何一个设置失败，就放弃复用
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 6.3 如果无法复用原数组（空间不足或TrySetSlot失败），创建新数组
+        if (resultList == null)
+        {
+            // 6.3.1 计算新数组大小：至少是原来的2倍，但必须能容纳所有委托
+            int allocCount = invocationList.Length;
+            while (allocCount &lt; resultCount)
+                allocCount *= 2;  // 按2倍扩容，减少后续扩容次数
+
+            // 6.3.2 创建新数组
+            resultList = new object[allocCount];
+
+            // 6.3.3 复制当前委托的所有委托到新数组
+            for (int i = 0; i &lt; invocationCount; i++)
+                resultList[i] = invocationList[i];
+
+            // 6.3.4 复制 follow 的委托到新数组
+            if (followList == null)
+            {
+                resultList[invocationCount] = dFollow;
+            }
+            else
+            {
+                for (int i = 0; i &lt; followCount; i++)
+                    resultList[invocationCount + i] = followList[i];
+            }
+        }
+
+        // 6.4 创建新的多播委托（当前已是多播，所以 thisIsMultiCastAlready = true）
+        return NewMulticastDelegate(resultList, resultCount, true);
+    }
+}
+
+/// &lt;summary&gt;
+/// 尝试在指定数组索引处设置委托对象
+/// 此方法用于在合并多播委托时，将新的委托添加到调用列表数组的指定位置
+/// &lt;/summary&gt;
+/// &lt;param name=&quot;a&quot;&gt;调用列表数组，可能包含null或已有的委托引用&lt;/param&gt;
+/// &lt;param name=&quot;index&quot;&gt;要设置的数组索引位置&lt;/param&gt;
+/// &lt;param name=&quot;o&quot;&gt;要设置的委托对象，必须是MulticastDelegate类型&lt;/param&gt;
+/// &lt;returns&gt;如果成功设置或委托已存在，则返回true；如果位置已被不同委托占用，则返回false&lt;/returns&gt;
+private static bool TrySetSlot(object?[] a, int index, object o)
+{
+    // 第一阶段：原子性尝试设置（处理并发场景）
+    // 1. 检查指定索引位置是否为空
+    // 2. 如果是空的，则使用Interlocked.CompareExchange原子性地尝试设置委托对象
+    // 3. CompareExchange的作用：比较a[index]当前是否为null，如果是则用o替换，返回原始值
+    // 4. 如果原始值为null，说明我们成功设置了该位置，返回true
+    if (a[index] == null &amp;&amp; Interlocked.CompareExchange(ref a[index], o, null) == null)
+        return true;
+
+    // 第二阶段：重复委托检测（处理非并发场景或设置失败后的检查）
+    // 如果原子设置失败，可能是因为：
+    // 1. 位置已被其他线程设置了不同的委托
+    // 2. 位置已经有委托（可能是之前添加过但又被移除了）
+    // 3. 当前线程之前已经设置过相同的委托
+
+    // 检查指定位置是否已经有对象存在
+    if (a[index] is object ai)
+    {
+        // 将待设置的委托和数组中现有的委托都转换为MulticastDelegate
+        MulticastDelegate d = (MulticastDelegate)o;    // 要添加的新委托
+        MulticastDelegate dd = (MulticastDelegate)ai;  // 数组中已存在的委托
+
+        // 比较两个委托是否表示相同的方法调用
+        // 通过比较三个核心字段来确定委托的完全相等性：
+        // 1. _methodPtr: 方法指针，指向实际执行的方法
+        // 2. _target: 目标对象，对于实例方法是对象实例，对于静态方法是null
+        // 3. _methodPtrAux: 辅助方法指针，在多播委托中用于处理调用逻辑
+        if (dd._methodPtr == d._methodPtr &amp;&amp;
+            dd._target == d._target &amp;&amp;6
+            dd._methodPtrAux == d._methodPtrAux)
+        {
+            // 如果两个委托完全相等，则视为&quot;成功设置&quot;
+            // 这发生在：同一个方法被移除后又重新添加，或者多个线程尝试添加相同委托的情况
+            return true;
+        }
+    }
+
+    // 设置失败：指定位置已被不同的委托占用
+    return false;
+}
+</code></pre>
+<p><strong>对于多播委托，在Invoke时是如何调用的呢？</strong> 依据上面的分析，可知会通过_invocationCount控制遍历范围，仅调用_invocationList的前_invocationCount个元素，从而允许多个delegate共享同一个object[]但保持逻辑隔离，是按内存共享</p>
+<p>具体的多播调用逻辑可以在<a target="_blank" rel="noopener" href="https://github.com/dotnet/runtime/blob/main/src/coreclr/vm/comdelegate.cpp#L2184">runtime&#x2F;src&#x2F;coreclr&#x2F;vm&#x2F;comdelegate.cpp at main · dotnet&#x2F;runtime</a>查看，其是一个非托管方法</p>
+<h1 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h1><p>至此，我们从 callback 的思想一路走到了委托的底层实现。你会发现，所谓的“高级特性”，往往只是基础思想在语言层面的精巧包装。委托没有创造新的概念，它只是让 callback 变得更安全、更强大，也更面向对象。​ 看清了这一点，剩下的 API 细节，也就只是顺理成章的延伸了。</p>
+</article><div class="post-copyright"><div class="post-copyright__author"><span class="post-copyright-meta"><i class="fas fa-circle-user fa-fw"></i>文章作者: </span><span class="post-copyright-info"><a href="http://www.aixheee.top">Aixheee</a></span></div><div class="post-copyright__type"><span class="post-copyright-meta"><i class="fas fa-square-arrow-up-right fa-fw"></i>文章链接: </span><span class="post-copyright-info"><a href="http://www.aixheee.top/posts/delegate.html">http://www.aixheee.top/posts/delegate.html</a></span></div><div class="post-copyright__notice"><span class="post-copyright-meta"><i class="fas fa-circle-exclamation fa-fw"></i>版权声明: </span><span class="post-copyright-info">本博客所有文章除特别声明外，均采用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">CC BY-NC-SA 4.0</a> 许可协议。转载请注明来源 <a href="http://www.aixheee.top" target="_blank">Aixheee`Blog</a>！</span></div></div><div class="tag_share"><div class="post-share"><div class="social-share" data-image="/img/avatar.jpg" data-sites="facebook,x,wechat,weibo,qq"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/sharejs/dist/css/share.min.css" media="print" onload="this.media='all'"><script src="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/sharejs/dist/js/social-share.min.js" defer></script></div></div></div><div class="aside-content" id="aside-content"><div class="card-widget card-info text-center"><div class="avatar-img"><img src="/img/avatar.jpg" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="author-info-name">Aixheee</div><div class="author-info-description">明道若昧，进道若退，夷道若纇</div><div class="site-data"><a href="/archives/"><div class="headline">文章</div><div class="length-num">13</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">3</div></a></div><div class="card-info-social-icons"><a class="social-icon" href="https://gitee.com/Aixheee" target="_blank" title="Gitee"><i class="fab fa-github" style="color: #24292e;"></i></a><a class="social-icon" href="mailto:Aixheee@outlook.com" target="_blank" title="Email"><i class="fas fa-envelope" style="color: #4a7dbe;"></i></a></div></div><div class="sticky_layout"><div class="card-widget" id="card-toc"><div class="item-headline"><i class="fas fa-stream"></i><span>目录</span><span class="toc-percentage"></span></div><div class="toc-content"><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#%E7%90%86%E8%A7%A3callback"><span class="toc-number">1.</span> <span class="toc-text">理解callback</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E7%90%86%E8%A7%A3%E5%A7%94%E6%89%98-%E4%BA%8B%E4%BB%B6"><span class="toc-number">2.</span> <span class="toc-text">理解委托 事件</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E5%A7%94%E6%89%98%E5%BA%95%E5%B1%82%E5%8E%9F%E7%90%86"><span class="toc-number">3.</span> <span class="toc-text">委托底层原理</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E5%A4%9A%E6%92%AD%E5%A7%94%E6%89%98%E7%9A%84%E5%AE%9E%E7%8E%B0"><span class="toc-number">4.</span> <span class="toc-text">多播委托的实现</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E6%80%BB%E7%BB%93"><span class="toc-number">5.</span> <span class="toc-text">总结</span></a></li></ol></div></div><div class="card-widget card-recent-post"><div class="item-headline"><i class="fas fa-history"></i><span>最新文章</span></div><div class="aside-list"><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/posts/stack_and_signal.html" title="从栈到信号：操作系统如何操作、切换和修改执行流">从栈到信号：操作系统如何操作、切换和修改执行流</a><time datetime="2026-06-06T16:00:00.000Z" title="发表于 2026-06-07 00:00:00">2026-06-07</time></div></div><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/posts/delegate.html" title="回调 委托">回调 委托</a><time datetime="2026-06-04T16:00:00.000Z" title="发表于 2026-06-05 00:00:00">2026-06-05</time></div></div><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/posts/UnityGC.html" title="【内存分配与管理】Unity GC">【内存分配与管理】Unity GC</a><time datetime="2026-06-02T16:00:00.000Z" title="发表于 2026-06-03 00:00:00">2026-06-03</time></div></div></div></div></div></div></main><footer id="footer"><div class="footer-other"><div class="footer-copyright"><span class="copyright">&copy;&nbsp;2026 By Aixheee</span></div></div></footer></div><div id="rightside"><div id="rightside-config-hide"><button id="readmode" type="button" title="阅读模式"><i class="fas fa-book-open"></i></button><button id="darkmode" type="button" title="日间和夜间模式切换"><i class="fas fa-adjust"></i></button><button id="hide-aside-btn" type="button" title="单栏和双栏切换"><i class="fas fa-arrows-alt-h"></i></button></div><div id="rightside-config-show"><button id="rightside-config" type="button" title="设置"><i class="fas fa-cog fa-spin"></i></button><button class="close" id="mobile-toc-button" type="button" title="目录"><i class="fas fa-list-ul"></i></button><button id="go-up" type="button" title="回到顶部"><span class="scroll-percent"></span><i class="fas fa-arrow-up"></i></button></div></div><div><script src="/js/utils.js?v=5.5.4"></script><script src="/js/main.js?v=5.5.4"></script><div class="js-pjax"></div><script async data-pjax src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script><div id="local-search"><div class="search-dialog"><nav class="search-nav"><span class="search-dialog-title">搜索</span><i class="fas fa-spinner fa-pulse" id="loading-status" hidden="hidden"></i><button class="search-close-button"><i class="fas fa-times"></i></button></nav><div class="text-center" id="loading-database"><i class="fas fa-spinner fa-pulse"></i><span>  数据加载中</span></div><div class="local-search-input"><input placeholder="搜索文章" type="text"/></div><hr/><div id="local-search-results"></div><div class="ais-Pagination" id="local-search-pagination" style="display:none;"><ul class="ais-Pagination-list"></ul></div><div id="local-search-stats"></div></div><div id="search-mask"></div><script src="/js/search/local-search.js?v=5.5.4"></script></div></div><!-- hexo injector body_end start --><script data-pjax>
+    function butterfly_categories_card_injector_config(){
+      var parent_div_git = document.getElementById('recent-posts');
+      var item_html = '<style>li.categoryBar-list-item{width:32.3%;}.categoryBar-list{max-height: 190px;overflow:auto;}.categoryBar-list::-webkit-scrollbar{width:0!important}@media screen and (max-width: 650px){.categoryBar-list{max-height: 160px;}}</style><div class="recent-post-item" style="height:auto;width:100%;padding:0px;"><div id="categoryBar"><ul class="categoryBar-list"><li class="categoryBar-list-item" style="background:url(http://img.aixheee.top/8ce5613f2f8cc2266406757796a5f2d8.png);"> <a class="categoryBar-list-link" href="categories/操作系统/">操作系统</a><span class="categoryBar-list-count">1</span><span class="categoryBar-list-descr"></span></li><li class="categoryBar-list-item" style="background:url(http://img.aixheee.top/cate2.png);"> <a class="categoryBar-list-link" href="categories/C/">C#</a><span class="categoryBar-list-count">1</span><span class="categoryBar-list-descr"></span></li><li class="categoryBar-list-item" style="background:url(http://img.aixheee.top/cate3.png);"> <a class="categoryBar-list-link" href="categories/内存分配与管理/">内存分配与管理</a><span class="categoryBar-list-count">11</span><span class="categoryBar-list-descr"></span></li></ul></div></div>';
+      console.log('已挂载butterfly_categories_card')
+      parent_div_git.insertAdjacentHTML("afterbegin",item_html)
+      }
+    if( document.getElementById('recent-posts') && (location.pathname ==='/'|| '/' ==='all')){
+    butterfly_categories_card_injector_config()
+    }
+  </script><!-- hexo injector body_end end --></body></html>
