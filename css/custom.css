@@ -21,3 +21,37 @@
 [data-theme="dark"] #page-header::before {
   background: transparent !important;
 }
+
+
+/* 强制加深代码文字颜色 - 覆盖所有情况 */
+.highlight .code pre,
+.highlight pre,
+.highlight code,
+figure.highlight pre,
+figure.highlight code,
+pre code,
+code {
+    color: #333333 !important;
+}
+
+/* 针对行内代码（反引号包裹的代码） */
+p code,
+li code,
+td code {
+    color: #333333 !important;
+}
+
+/* 如果你用的是 mac 或 darker 高亮主题，额外覆盖这些 */
+.hljs-string,
+.hljs-title,
+.hljs-name,
+.hljs-type,
+.hljs-attribute,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition,
+.hljs-variable,
+.hljs-template-tag,
+.hljs-template-variable {
+    color: #333333 !important;
+}
